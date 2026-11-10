@@ -35,12 +35,12 @@ const phases: Record<string, string> = {
   external: "MCP 참여",
 };
 const colors: Record<string, string> = {
-  openai: "#79cba7",
-  anthropic: "#d9a580",
-  grok: "#b9b9d1",
-  exaone: "#dd91b5",
-  "openai-compatible": "#89bbd9",
-  external: "#a5b5dd",
+  openai: "#93c5fd",
+  anthropic: "#fdba74",
+  grok: "#d4d4d4",
+  exaone: "#f9a8d4",
+  "openai-compatible": "#c4b5fd",
+  external: "#a5b4fc",
 };
 const providerSymbols: Record<string, string> = {
   openai: "◎", anthropic: "✳", grok: "𝕏", exaone: "E", "openai-compatible": "◇",
@@ -390,7 +390,7 @@ export default function ChatRoom({
                 const p = data.participants.find(
                     (p) => p.id === m.participantId,
                   ),
-                  color = colors[p?.provider || ""] || "#c6be91";
+                  color = colors[p?.provider || ""] || "#d4d4d4";
                 let evidence: unknown[] = [];
                 try {
                   evidence = JSON.parse(m.evidence);
@@ -556,7 +556,7 @@ export default function ChatRoom({
         </h2>
         {data?.participants.map((p) => (
           <div className="participant" key={p.id}>
-            <span style={{ color: colors[p.provider] || "#aaa" }}>
+            <span style={{ color: colors[p.provider] || "#d4d4d4" }}>
               {providerSymbols[p.provider] || "↗"}
             </span>
             <div>

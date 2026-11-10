@@ -42,10 +42,25 @@
       "name": "GPT API",
       "provider": "openai",
       "transport": "api",
+      "baseURL": "https://api.openai.com/v1",
+      "apiFormat": "responses",
       "model": "",
       "apiKey": "",
       "enabled": false,
       "webSearch": true
+    },
+    {
+      "id": "exaone",
+      "name": "EXAONE",
+      "provider": "exaone",
+      "transport": "api",
+      "baseURL": "https://api.exaone.ai/v1",
+      "apiFormat": "chat-completions",
+      "model": "k-exaone_v2.5",
+      "apiKey": "",
+      "enabled": false,
+      "webSearch": false,
+      "maxOutputTokens": 16384
     }
   ],
   "limits": {

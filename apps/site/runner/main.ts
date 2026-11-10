@@ -12,12 +12,22 @@ import { call, loadAuth, RequestError } from "./client.ts";
 import { executeTurn } from "./engine.ts";
 import { runProcess } from "./process.ts";
 import { setupSandbox } from "./setup-sandbox.ts";
+import { isActiveProvider, providers } from "../lib/providers.ts";
 
 const args = process.argv.slice(2),
   command = args[0] || "help";
 const configIndex = args.indexOf("--config"),
   configFile = configIndex >= 0 ? args[configIndex + 1] : "config.local.json";
 async function main() {
+  if (command === "providers") {
+    console.table(Object.entries(providers).map(([provider, info]) => ({
+      provider,
+      transport: info.cli ? "cli / api" : info.api ? "api" : "비활성",
+      apiFormat: info.api?.format || "-",
+      baseURL: info.api?.baseURL || (info.api ? "직접 지정" : "-"),
+    })));
+    return;
+  }
   if (command === "init") {
     try {
       await createExample(configFile);
@@ -87,11 +97,23 @@ async function main() {
   if (command === "sandbox-setup") return setupSandbox(config.dataDir);
   if (command === "install-api") {
     const provider = args[1];
-    if (!["openai", "anthropic", "grok"].includes(provider))
-      throw new Error("install-api openai|anthropic|grok");
+    if (!isActiveProvider(provider))
+      throw new Error("install-api openai|anthropic|grok|exaone|openai-compatible");
     const npm = process.env.npm_execpath;
     if (!npm)
       throw new Error("npm run runner -- install-api <업체>로 실행해 주세요.");
+    const wanted = providers[provider].api?.format === "messages" ? "@anthropic-ai/sdk" : "openai";
+    const packages = [wanted];
+    // npm --no-save would otherwise prune the other optional SDK.
+    for (const name of ["openai", "@anthropic-ai/sdk"]) {
+      if (name === wanted) continue;
+      try {
+        const installed = JSON.parse(await readFile(new URL(`./node_modules/${name}/package.json`, import.meta.url), "utf8"));
+        packages.push(`${name}@${installed.version}`);
+      } catch (error: any) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
     await runProcess(
       process.execPath,
       [
@@ -99,7 +121,7 @@ async function main() {
         "install",
         "--no-save",
         "--package-lock=false",
-        provider === "anthropic" ? "@anthropic-ai/sdk" : "openai",
+        ...packages,
       ],
       { cwd: fileURLToPath(new URL("./", import.meta.url)), timeoutMs: 180000 },
     );
@@ -117,7 +139,7 @@ async function main() {
   }
   if (command !== "start") {
     console.log(
-      "Panopticon runner\n  init | pair | doctor | start | sandbox-setup\n  install-api openai|anthropic|grok\n  memory-history <profile> <channel>\n  memory-restore <profile> <channel> <revisionFile>\n  --config <file>",
+      "Panopticon runner\n  init | pair | doctor | start | providers | sandbox-setup\n  install-api openai|anthropic|grok|exaone|openai-compatible\n  memory-history <profile> <channel>\n  memory-restore <profile> <channel> <revisionFile>\n  --config <file>",
     );
     return;
   }

@@ -1,6 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { resolveApiKey, type Profile } from "./config.ts";
+import { resolveApiKey, resolveApiConnection, type Profile } from "./config.ts";
+import { providers } from "../lib/providers.ts";
+import { apiTurn } from "./api.ts";
 import { RpcProcess, runProcess } from "./process.ts";
 export interface ModelResult {
   text: string;
@@ -13,6 +15,7 @@ export async function probe(
 ): Promise<{ ready: boolean; detail: string }> {
   if (profile.provider === "gemini") return { ready: false, detail: "준비 중" };
   if (profile.transport === "api") {
+    const connection = resolveApiConnection(profile);
     if (!resolveApiKey(profile))
       return {
         ready: false,
@@ -21,10 +24,8 @@ export async function probe(
     if (!profile.model)
       return { ready: false, detail: "API 연결은 model 설정이 필요합니다." };
     try {
-      await packageImport(
-        profile.provider === "anthropic" ? "@anthropic-ai/sdk" : "openai",
-      );
-      return { ready: true, detail: "API 구성됨 (실제 접근은 호출 시 확인)" };
+      await packageImport(connection.sdk);
+      return { ready: true, detail: `API 구성됨 · ${providers[profile.provider].label} · ${connection.apiFormat} (실제 접근은 호출 시 확인)` };
     } catch {
       return {
         ready: false,
@@ -32,12 +33,11 @@ export async function probe(
       };
     }
   }
+  const cli = providers[profile.provider].cli;
+  if (!cli) return { ready: false, detail: "이 provider는 API 연결만 지원합니다." };
   try {
     const result = await runProcess(
-      profile.binary ||
-        ({ openai: "codex", anthropic: "claude", grok: "grok" } as const)[
-          profile.provider
-        ],
+      profile.binary || cli,
       ["--version"],
       { timeoutMs: 15000, maxOutput: 10000 },
     );
@@ -49,86 +49,6 @@ export async function probe(
         "공식 CLI를 설치·로그인하고 필요하면 binary 경로를 지정해 주세요.",
     };
   }
-}
-async function apiTurn(
-  profile: Profile,
-  instructions: string,
-  input: string,
-  signal: AbortSignal,
-): Promise<ModelResult> {
-  if (profile.provider === "gemini") throw new Error("Gemini는 비활성입니다.");
-  const apiKey = resolveApiKey(profile);
-  if (!apiKey || !profile.model)
-    throw new Error("프로필의 apiKey(또는 API 키 환경변수)와 model을 설정해 주세요.");
-  if (profile.provider === "anthropic") {
-    const { default: Anthropic } = await packageImport("@anthropic-ai/sdk");
-    const client = new Anthropic({ apiKey, maxRetries: 0, timeout: 180000 });
-    const response = await client.messages.create(
-      {
-        model: profile.model,
-        max_tokens: 4096,
-        system: instructions,
-        messages: [{ role: "user", content: input }],
-        ...(profile.webSearch
-          ? {
-              tools: [
-                {
-                  type: "web_search_20250305",
-                  name: "web_search",
-                  max_uses: 3,
-                },
-              ],
-            }
-          : {}),
-      },
-      { signal },
-    );
-    return {
-      text: response.content
-        .filter((x: any) => x.type === "text")
-        .map((x: any) => x.text)
-        .join("\n"),
-      usage: response.usage,
-      sources: response.content.filter(
-        (x: any) => x.type === "web_search_tool_result",
-      ),
-    };
-  }
-  const { default: OpenAI } = await packageImport("openai");
-  const client = new OpenAI({
-    apiKey,
-    maxRetries: 0,
-    timeout: 180000,
-    ...(profile.provider === "grok" ? { baseURL: "https://api.x.ai/v1" } : {}),
-  });
-  const response = await client.responses.create(
-    {
-      model: profile.model,
-      instructions,
-      input,
-      store: false,
-      max_output_tokens: 4096,
-      ...(profile.webSearch ? { tools: [{ type: "web_search" }] } : {}),
-    },
-    { signal },
-  );
-  return {
-    text: response.output_text || "",
-    usage: response.usage || null,
-    sources:
-      response.output
-        ?.filter(
-          (x: any) =>
-            x.type === "web_search_call" ||
-            (x.type === "message" &&
-              x.content?.some((c: any) => c.annotations?.length)),
-        )
-        .map((x: any) =>
-          x.type === "message"
-            ? x.content.flatMap((c: any) => c.annotations || [])
-            : x,
-        ) || [],
-  };
 }
 async function codexTurn(
   profile: Profile,
@@ -260,6 +180,8 @@ export async function runModel(
     throw new Error("Gemini는 초기 버전에서 호출하지 않습니다.");
   if (profile.transport === "api")
     return apiTurn(profile, instructions, input, signal);
+  if (!providers[profile.provider].cli)
+    throw new Error("이 provider는 API 연결만 지원합니다.");
   const cwd = path.join(dataDir, "sessions", profile.id);
   await mkdir(cwd, { recursive: true });
   if (profile.provider === "openai")

@@ -1,4 +1,4 @@
-export type Provider = "openai" | "anthropic" | "grok" | "gemini";
+export type { Provider } from "./providers.ts";
 export type Phase = "chat" | "review" | "revise" | "summary" | "heartbeat";
 export interface Actor {
   id: string;

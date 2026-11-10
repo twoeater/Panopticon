@@ -38,7 +38,12 @@ const colors: Record<string, string> = {
   openai: "#79cba7",
   anthropic: "#d9a580",
   grok: "#b9b9d1",
+  exaone: "#dd91b5",
+  "openai-compatible": "#89bbd9",
   external: "#a5b5dd",
+};
+const providerSymbols: Record<string, string> = {
+  openai: "◎", anthropic: "✳", grok: "𝕏", exaone: "E", "openai-compatible": "◇",
 };
 async function api(
   action: string,
@@ -405,13 +410,7 @@ export default function ChatRoom({
                     >
                       {m.kind === "human"
                         ? m.author[0]?.toUpperCase()
-                        : p?.provider === "openai"
-                          ? "◎"
-                          : p?.provider === "anthropic"
-                            ? "✳"
-                            : p?.provider === "grok"
-                              ? "𝕏"
-                              : "↗"}
+                        : providerSymbols[p?.provider || ""] || "↗"}
                     </div>
                     <div className="message-main">
                       <div className="message-meta">
@@ -558,13 +557,7 @@ export default function ChatRoom({
         {data?.participants.map((p) => (
           <div className="participant" key={p.id}>
             <span style={{ color: colors[p.provider] || "#aaa" }}>
-              {p.provider === "openai"
-                ? "◎"
-                : p.provider === "anthropic"
-                  ? "✳"
-                  : p.provider === "grok"
-                    ? "𝕏"
-                    : "↗"}
+              {providerSymbols[p.provider] || "↗"}
             </span>
             <div>
               <strong>{p.name}</strong>

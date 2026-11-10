@@ -25,6 +25,29 @@ async function setup() {
   });
   return { room, sqlite, channel, device, auth };
 }
+
+test("EXAONE and compatible providers register, change provider and receive jobs without storing credentials", async () => {
+  const { room, sqlite, channel, device } = await setup();
+  try {
+    const profiles = [
+      { id: "exa", name: "EXAONE", provider: "exaone", apiKey: "private-test-key", baseURL: "https://private-gateway.example/v1" },
+      { id: "custom", name: "Custom", provider: "openai-compatible" },
+    ];
+    const registered: any = await room.call(device, "register", { channelId: channel.id, profiles });
+    assert.deepEqual(registered.map((p: any) => p.provider).sort(), ["exaone", "openai-compatible"]);
+    assert.doesNotMatch(JSON.stringify(registered), /private-test-key|private-gateway/);
+    await room.call(alice, "message_post", { channelId: channel.id, text: "test", clientMessageId: "new-providers" });
+    const turn: any = await room.call(device, "poll", { channelId: channel.id, historyMessageCount: 0, claim: true });
+    assert.equal(turn.jobs.length, 1);
+    assert.ok(["exaone", "openai-compatible"].includes(turn.jobs[0].participant.provider));
+    await room.call(device, "register", { channelId: channel.id, profiles: [{ id: "exa", name: "Changed", provider: "openai-compatible" }] });
+    const snapshot: any = await room.call(alice, "snapshot", { channelId: channel.id });
+    const changed = snapshot.participants.find((p: any) => p.profileId === "exa");
+    assert.equal(changed.provider, "openai-compatible");
+    for (const provider of ["gemini", "unknown"])
+      await assert.rejects(room.call(device, "register", { channelId: channel.id, profiles: [{ id: "bad", name: "Bad", provider }] }), /지원하지/);
+  } finally { sqlite.close(); }
+});
 test("password, memberships, one-use pairing, device revocation and bans", async () => {
   const { room, sqlite, channel, device, auth } = await setup();
   try {

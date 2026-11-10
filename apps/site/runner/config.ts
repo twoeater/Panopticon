@@ -1,15 +1,19 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isProvider, providers, type Provider, type ApiFormat } from "../lib/providers.ts";
 export type Profile = {
   id: string;
   name: string;
-  provider: "openai" | "anthropic" | "grok" | "gemini";
+  provider: Provider;
   transport: "cli" | "api";
   enabled: boolean;
   model?: string;
   binary?: string;
   apiKey?: string;
   apiKeyEnv?: string;
+  baseURL?: string;
+  apiFormat?: ApiFormat;
+  maxOutputTokens?: number;
   webSearch?: boolean;
 };
 export interface Config {
@@ -77,10 +81,25 @@ export const defaults: Config = {
       name: "GPT API",
       provider: "openai",
       transport: "api",
+      baseURL: "https://api.openai.com/v1",
+      apiFormat: "responses",
       model: "",
       apiKey: "",
       enabled: false,
       webSearch: true,
+    },
+    {
+      id: "exaone",
+      name: "EXAONE",
+      provider: "exaone",
+      transport: "api",
+      baseURL: "https://api.exaone.ai/v1",
+      apiFormat: "chat-completions",
+      model: "k-exaone_v2.5",
+      apiKey: "",
+      enabled: false,
+      webSearch: false,
+      maxOutputTokens: 16384,
     },
   ],
   limits: {
@@ -159,11 +178,13 @@ export function parseConfig(raw: any, base = process.cwd()): Config {
     throw new Error("profiles는 최대 12개의 참가자 배열입니다.");
   const seen = new Set<string>();
   for (const p of value.profiles) {
+    if (!p || typeof p !== "object" || Array.isArray(p))
+      throw new Error("참가자 설정은 JSON 객체여야 합니다.");
     if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(p.id) || seen.has(p.id))
       throw new Error("참가자 ID는 중복 없는 소문자 영숫자·하이픈·밑줄입니다.");
     seen.add(p.id);
     if (
-      !["openai", "anthropic", "grok", "gemini"].includes(p.provider) ||
+      !isProvider(p.provider) ||
       !["cli", "api"].includes(p.transport) ||
       typeof p.enabled !== "boolean" ||
       typeof p.name !== "string" ||
@@ -176,6 +197,18 @@ export function parseConfig(raw: any, base = process.cwd()): Config {
     for (const field of ["apiKey", "apiKeyEnv"] as const)
       if (p[field] !== undefined && typeof p[field] !== "string")
         throw new Error(`참가자의 ${field}는 문자열이어야 합니다.`);
+    if (p.webSearch !== undefined && typeof p.webSearch !== "boolean")
+      throw new Error("webSearch는 true 또는 false여야 합니다.");
+    if (p.maxOutputTokens !== undefined)
+      int(p.maxOutputTokens, 1, 524288, "maxOutputTokens");
+    if (p.transport === "api" && p.provider !== "gemini")
+      resolveApiConnection(p);
+    if (p.transport === "cli") {
+      if (p.provider !== "gemini" && !providers[p.provider].cli)
+        throw new Error("이 provider는 transport: api만 지원합니다.");
+      if (p.baseURL !== undefined || p.apiFormat !== undefined || p.maxOutputTokens !== undefined)
+        throw new Error("baseURL·apiFormat·maxOutputTokens는 transport: api에서만 사용합니다.");
+    }
   }
   return value;
 }
@@ -185,13 +218,40 @@ export function resolveApiKey(
 ): string | undefined {
   const directKey = profile.apiKey?.trim();
   if (directKey) return directKey;
-  const defaultEnv: Partial<Record<Profile["provider"], string>> = {
-    openai: "OPENAI_API_KEY",
-    anthropic: "ANTHROPIC_API_KEY",
-    grok: "XAI_API_KEY",
-  };
-  const envName = profile.apiKeyEnv || defaultEnv[profile.provider];
+  const envName = profile.apiKeyEnv || providers[profile.provider].api?.keyEnv;
   return envName ? env[envName]?.trim() || undefined : undefined;
+}
+export function resolveApiConnection(profile: Profile) {
+  const preset = providers[profile.provider].api;
+  if (!preset) throw new Error("이 provider는 아직 API를 지원하지 않습니다.");
+  const apiFormat = profile.apiFormat ?? preset.format;
+  if (!["responses", "chat-completions", "messages"].includes(apiFormat))
+    throw new Error("apiFormat은 responses, chat-completions, messages 중 하나입니다.");
+  if ((profile.provider === "anthropic") !== (apiFormat === "messages"))
+    throw new Error("Anthropic provider는 messages 형식만 지원합니다.");
+  if (profile.provider === "exaone" && apiFormat !== "chat-completions")
+    throw new Error("EXAONE은 chat-completions 형식을 사용합니다.");
+  if (apiFormat === "chat-completions" && profile.webSearch)
+    throw new Error("Chat Completions 연결은 webSearch: false로 설정해 주세요.");
+  if (profile.baseURL !== undefined && typeof profile.baseURL !== "string")
+    throw new Error("baseURL은 URL 문자열이어야 합니다.");
+  const address = profile.baseURL?.trim() || preset.baseURL;
+  if (!address) throw new Error("openai-compatible provider는 baseURL을 지정해야 합니다.");
+  let url: URL;
+  try { url = new URL(address); }
+  catch { throw new Error("baseURL에 올바른 API 기본 주소를 입력해 주세요."); }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
+    throw new Error("baseURL은 HTTPS 또는 로컬 loopback HTTP 주소여야 합니다.");
+  if (url.username || url.password || url.search || url.hash)
+    throw new Error("baseURL에 인증 정보·쿼리·프래그먼트를 포함할 수 없습니다.");
+  if (/\/(?:responses|chat\/completions|messages)\/*$/.test(url.pathname))
+    throw new Error("baseURL에는 /responses·/chat/completions·/messages를 제외한 기본 주소를 입력하세요.");
+  return {
+    baseURL: url.href.replace(/\/+$/, ""),
+    apiFormat,
+    maxOutputTokens: profile.maxOutputTokens ?? (profile.provider === "exaone" ? 16384 : 4096),
+    sdk: apiFormat === "messages" ? "@anthropic-ai/sdk" : "openai",
+  };
 }
 export async function loadConfig(file = "config.local.json") {
   const fullPath = path.resolve(file);

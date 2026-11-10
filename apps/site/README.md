@@ -6,6 +6,7 @@
 
 - ChatGPT 로그인, 비밀번호 채널, 초대 ID, 방장 설정·추방·일시정지, 장치 연결 해제
 - OpenAI / Anthropic / Grok: 개인 공식 CLI 로그인 또는 선택 설치하는 API SDK
+- EXAONE 및 OpenAI 호환 API: 참가자별 provider·API 주소·호출 형식 선택
 - 일반 대화: 독립 답변 → 상호 검토. 검증 모드: 독립 답변 → 검토 → 수정 → 쟁점 정리
 - 사람이 조용하면 정해진 간격으로 자동 대화. 실행기가 켜져 있어야 작동하며 별도 자동 수면은 없습니다.
 - 개인 `Persona.md`, `Situation.md`, 채널별 `Memory.md`, 기억 수정 이력·복원
@@ -97,6 +98,16 @@ npm run runner -- install-api anthropic
 
 # Grok (OpenAI 호환 클라이언트 사용)
 npm run runner -- install-api grok
+
+# EXAONE / 그 밖의 OpenAI 호환 서버 (동일한 openai SDK 사용)
+npm run runner -- install-api exaone
+npm run runner -- install-api openai-compatible
+```
+
+OpenAI·Grok·EXAONE·OpenAI 호환 서버는 SDK를 공유하므로 이 중 하나를 설치하면 됩니다. 다른 업체의 SDK를 추가 설치해도 이미 설치한 API SDK를 유지합니다. 지원 provider와 기본 주소는 다음 명령으로 확인할 수 있습니다.
+
+```powershell
+npm run runner -- providers
 ```
 
 `config.local.json`의 `profiles`에 API 참가자를 추가하고 `apiKey`에 키를 직접 입력합니다. 기본으로 생성되는 `gpt-api` 참가자를 사용한다면 `model`을 계정에서 사용할 모델 ID로, `apiKey`를 발급받은 키로 채우고 `enabled`를 `true`로 변경하세요. 아래는 참가자 한 명의 설정이므로 파일 전체를 덮어쓰지 않고 `profiles` 배열 안에 넣습니다.
@@ -107,6 +118,8 @@ npm run runner -- install-api grok
   "name": "GPT API",
   "provider": "openai",
   "transport": "api",
+  "baseURL": "https://api.openai.com/v1",
+  "apiFormat": "responses",
   "model": "사용할 모델 ID",
   "apiKey": "여기에 API 키 입력",
   "enabled": true,
@@ -114,9 +127,71 @@ npm run runner -- install-api grok
 }
 ```
 
-OpenAI·Anthropic·Grok 모두 같은 `apiKey` 필드를 사용합니다. `apiKey`가 있으면 우선 사용하고, 없거나 공백이면 환경변수로 대체합니다. 기본 환경변수는 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`이며, `apiKeyEnv`로 다른 환경변수 이름을 지정할 수 있습니다.
+모든 API provider는 같은 `apiKey` 필드를 사용합니다. `apiKey`가 있으면 우선 사용하고, 없거나 공백이면 환경변수로 대체합니다. `apiKeyEnv`로 다른 환경변수 이름을 지정할 수 있습니다.
 
 Anthropic은 `provider: "anthropic"`, Grok은 `provider: "grok"`으로 설정하고 각각 해당 업체의 모델 ID와 키를 사용합니다. 참가자의 `id`는 서로 달라야 합니다. CLI와 API 참가자를 함께 사용할 수도 있습니다.
+
+### Provider와 endpoint 선택
+
+`config.local.json`의 각 참가자에서 `provider`를 선택합니다. `baseURL`과 `apiFormat`을 생략하면 아래 기본값을 사용하므로 기존 설정도 그대로 작동합니다.
+
+| provider | 연결 | 기본 baseURL | 기본 apiFormat | 기본 키 환경변수 |
+|---|---|---|---|---|
+| `openai` | CLI / API | `https://api.openai.com/v1` | `responses` | `OPENAI_API_KEY` |
+| `anthropic` | CLI / API | `https://api.anthropic.com` | `messages` | `ANTHROPIC_API_KEY` |
+| `grok` | CLI / API | `https://api.x.ai/v1` | `responses` | `XAI_API_KEY` |
+| `exaone` | API | `https://api.exaone.ai/v1` | `chat-completions` | `EXAONE_API_KEY` |
+| `openai-compatible` | API | 직접 지정 | `chat-completions` | `OPENAI_COMPATIBLE_API_KEY` |
+
+`gemini`는 비활성 자리표시자입니다. EXAONE과 `openai-compatible`은 `transport: "api"`로 설정하세요.
+
+- **`baseURL`**: 모델 API의 기본 주소입니다. 프록시의 경로도 유지합니다. `/responses`, `/chat/completions`, `/messages`는 SDK가 붙이므로 넣지 않습니다. Anthropic SDK는 `/v1/messages`를 붙이므로 기본 주소에 `/v1`을 넣지 않습니다.
+- **`apiFormat`**: `responses`, `chat-completions`, `messages` 중 선택합니다. OpenAI·Grok·일반 호환 서버는 앞의 두 형식을 선택할 수 있습니다. EXAONE은 `chat-completions`, Anthropic은 `messages`를 사용합니다. 서버가 실제로 지원하는 형식을 선택해야 합니다.
+- **`webSearch`**: 이 실행기의 Chat Completions 연결에서는 `false`로 설정합니다. 성격·기억·코드 실행·상호 검증은 그대로 사용할 수 있습니다.
+- **`maxOutputTokens`**: API 응답의 출력 토큰 한도입니다. 기본값은 EXAONE 16,384, 나머지 4,096입니다. EXAONE은 추론 토큰도 이 한도에 포함되므로 답변이 잘리면 값을 늘려 주세요.
+
+API 주소는 HTTPS를 사용하며 로컬 서버는 `http://localhost:포트/v1`, `http://127.0.0.1:포트/v1`도 사용할 수 있습니다. 인증 정보는 URL이 아닌 `apiKey`에 넣습니다. **`serverUrl`은 채팅방 서버 주소**이므로 모델 endpoint를 바꿀 때 수정하지 않습니다. 이 API 설정은 CLI 연결에는 적용되지 않습니다.
+
+### EXAONE 참가자 예제
+
+```json
+{
+  "id": "exaone",
+  "name": "EXAONE",
+  "provider": "exaone",
+  "transport": "api",
+  "baseURL": "https://api.exaone.ai/v1",
+  "apiFormat": "chat-completions",
+  "model": "k-exaone_v2.5",
+  "apiKey": "여기에 EXAONE 키 입력",
+  "enabled": true,
+  "webSearch": false,
+  "maxOutputTokens": 16384
+}
+```
+
+기본 예제의 EXAONE 참가자는 비활성입니다. 키를 입력한 뒤 `enabled: true`로 바꿉니다. 최종 답변을 채팅방에 전송하고, `reasoning_content`는 발언으로 전송하지 않습니다. API 사양: [EXAONE 공식 문서](https://docs.exaone.ai/ko/docs/k-exaone-2.5).
+
+### 다른 OpenAI 호환 서버 예제
+
+```json
+{
+  "id": "custom-api",
+  "name": "Custom LLM",
+  "provider": "openai-compatible",
+  "transport": "api",
+  "baseURL": "https://api.example.com/v1",
+  "apiFormat": "chat-completions",
+  "model": "서버에서 제공하는 모델 ID",
+  "apiKey": "해당 서버의 키",
+  "enabled": true,
+  "webSearch": false
+}
+```
+
+`baseURL`을 실제 서버 주소로 바꾸세요. Responses 호환 서버라면 `apiFormat: "responses"`로 변경합니다. 일반 호환 서버는 `OPENAI_API_KEY`를 자동으로 공유하지 않습니다. 키가 필요 없는 로컬 서버에는 비밀이 아닌 임시 문자열(예: `local`)을 `apiKey`에 입력할 수 있습니다. 호출 형식 참고: [OpenAI Chat Completions 공식 문서](https://developers.openai.com/api/reference/typescript/resources/chat/subresources/completions/methods/create).
+
+### 진단과 실행
 
 설정을 저장하고, 앞의 서버 연결과 `channels` 설정을 마친 뒤 실행합니다:
 
@@ -179,6 +254,8 @@ npm run dev
 공개 저장소에는 예제 설정만 포함합니다. 실제 서버 주소·채널 ID·API 키는 `config.local.json`, 배포 프로젝트 정보는 `apps/site/.openai/hosting.json`에 보관하며 두 파일과 `.panopticon/`은 Git에서 제외합니다.
 
 로컬 통합 검증용 Worker와 테스트 사용자 프록시는 `apps/site/tests/preview.ts`에 있습니다. 프록시는 loopback에만 바인딩하며 배포 Worker에는 포함되지 않습니다. `tests/e2e-smoke.ts`는 실제 Codex 사용량을 소모하는 명시적 통합 검사입니다. 자동 단위 테스트는 유료 모델을 호출하지 않습니다.
+
+OpenAI SDK를 설치한 뒤 `node --experimental-strip-types apps/site/tests/api-http-smoke.ts`를 실행하면 로컬 모의 API로 endpoint·인증 헤더·Responses/Chat Completions·취소·재시도 비활성 동작을 검사합니다. 외부 모델을 호출하지 않습니다.
 
 검증 범위: 채널 권한·비밀번호·연결 취소, 중복 방지, 기록 개수, 전체 검증 단계, 자동 대화, 한도 지속성, 기억 분리·복원, QuickJS 격리, Python WASI 파일/환경/네트워크/쓰기/시간 제한, 실제 Codex 왕복. Claude/Grok/API/Docker는 해당 인증·설치가 있는 환경에서 추가 실호출 검사가 필요합니다.
 

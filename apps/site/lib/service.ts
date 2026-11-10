@@ -20,6 +20,7 @@ import {
   verifyPassword,
   rateLimit,
 } from "./security.ts";
+import { isActiveProvider } from "./providers.ts";
 
 const channelColumns =
   "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,nextHeartbeatAt,paused,createdAt";
@@ -593,7 +594,7 @@ export class RoomService {
       const p = raw as Record<string, unknown>;
       if (
         !profilePattern.test(String(p.id)) ||
-        !["openai", "anthropic", "grok"].includes(String(p.provider))
+        !isActiveProvider(p.provider)
       )
         throw new AppError(
           400,

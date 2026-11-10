@@ -17,6 +17,7 @@ import {
   Menu,
 } from "lucide-react";
 import type { Channel, Participant, Message, Job, Round } from "../lib/domain";
+import { MessageMarkdown } from "./message-markdown";
 type Snapshot = {
   channel: Channel;
   messages: Message[];
@@ -57,21 +58,6 @@ async function api(
   const data: any = await res.json();
   if (!res.ok) throw new Error(data.error || "요청 실패");
   return data;
-}
-function Text({ text }: { text: string }) {
-  return (
-    <>
-      {text.split(/(https?:\/\/[^\s<>]+)/g).map((s, i) =>
-        /^https?:\/\//.test(s) ? (
-          <a key={i} href={s} target="_blank" rel="noreferrer">
-            {s}
-          </a>
-        ) : (
-          <span key={i}>{s}</span>
-        ),
-      )}
-    </>
-  );
 }
 export default function ChatRoom({
   user,
@@ -434,7 +420,7 @@ export default function ChatRoom({
                         </div>
                       )}
                       <div className="message-text">
-                        <Text text={m.text} />
+                        <MessageMarkdown text={m.text} messageId={m.id} />
                       </div>
                       {evidence.length > 0 && (
                         <details className="evidence">

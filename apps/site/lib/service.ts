@@ -23,7 +23,7 @@ import {
 import { isActiveProvider } from "./providers.ts";
 
 const channelColumns =
-  "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,nextHeartbeatAt,paused,createdAt";
+  "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,heartbeatParticipants,nextHeartbeatAt,paused,createdAt";
 const profilePattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export class RoomService {
   db: Database;
@@ -245,6 +245,15 @@ export class RoomService {
             "invalid_interval",
             "자동 대화 간격은 30~86400초입니다.",
           );
+        const heartbeatParticipants = args.heartbeatParticipants === undefined
+          ? channel.heartbeatParticipants
+          : args.heartbeatParticipants;
+        if (typeof heartbeatParticipants !== "number" || !Number.isInteger(heartbeatParticipants) || heartbeatParticipants < 0 || heartbeatParticipants > 1000)
+          throw new AppError(
+            400,
+            "invalid_participants",
+            "자동 대화 참여 인원은 1~1000명 또는 전체 참여(0)여야 합니다.",
+          );
         const paused =
           args.paused === undefined
             ? channel.paused
@@ -260,9 +269,10 @@ export class RoomService {
             "비밀번호는 8~256자입니다.",
           );
         await this.run(
-          "UPDATE channels SET situation=?,situationVersion=situationVersion+1,heartbeatSeconds=?,heartbeatEnabled=?,paused=?,nextHeartbeatAt=? WHERE id=?",
+          "UPDATE channels SET situation=?,situationVersion=situationVersion+1,heartbeatSeconds=?,heartbeatParticipants=?,heartbeatEnabled=?,paused=?,nextHeartbeatAt=? WHERE id=?",
           situation,
           seconds,
+          heartbeatParticipants,
           args.heartbeatEnabled === undefined
             ? channel.heartbeatEnabled
             : Number(Boolean(args.heartbeatEnabled)),
@@ -666,7 +676,7 @@ export class RoomService {
         Math.max(roster.length, 1);
       roster = [...roster.slice(offset), ...roster.slice(0, offset)].slice(
         0,
-        3,
+        channel.heartbeatParticipants === 0 ? roster.length : channel.heartbeatParticipants,
       );
     }
     const phase: Phase = kind === "heartbeat" ? "heartbeat" : "chat";

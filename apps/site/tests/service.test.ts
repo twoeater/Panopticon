@@ -155,6 +155,74 @@ test("blind answers, message-count context, idempotency, full verification and A
     sqlite.close();
   }
 });
+test("heartbeat participation settings default to three, persist and require channel ownership", async () => {
+  const {room,sqlite,channel,device}=await setup();
+  try {
+    assert.equal(channel.heartbeatParticipants,3);
+    await room.call(bob,"channel_join",{channelId:channel.id,password:"test-password"});
+    for(const actor of [bob,device])
+      await assert.rejects(room.call(actor,"channel_update",{channelId:channel.id,heartbeatParticipants:0}));
+    for(const count of [1,7,1000,0]) {
+      const saved:any=await room.call(alice,"channel_update",{channelId:channel.id,heartbeatParticipants:count});
+      assert.equal(saved.heartbeatParticipants,count);
+      assert.equal((await room.call(alice,"snapshot",{channelId:channel.id}) as any).channel.heartbeatParticipants,count);
+      assert.equal((await room.call(alice,"bootstrap") as any).channels[0].heartbeatParticipants,count);
+    }
+    await room.call(alice,"channel_update",{channelId:channel.id,situation:"keep the participation setting"});
+    for(const value of [-1,1.5,1001,NaN,Infinity,"3","all",null,true])
+      await assert.rejects(room.call(alice,"channel_update",{channelId:channel.id,heartbeatParticipants:value}),/참여 인원/);
+    assert.equal((await room.member(alice,channel.id)).heartbeatParticipants,0);
+  } finally {sqlite.close();}
+});
+
+test("heartbeat rosters use the selected cap or all eligible AI across users without changing normal chats", async () => {
+  const {room,sqlite,channel,device}=await setup();
+  try {
+    await room.call(device,"register",{channelId:channel.id,profiles:["a","b","c","d","offline","disabled"].map(id=>({id,name:id,provider:"openai"}))});
+    await room.call(bob,"channel_join",{channelId:channel.id,password:"test-password"});
+    const pair:any=await room.call(bob,"pair_create");
+    const auth=await room.pair(pair.code,"second-user");
+    const other=(await room.authenticate(auth.token))!;
+    await room.call(other,"register",{channelId:channel.id,profiles:[{id:"other",name:"Other",provider:"grok"}]});
+    const revokedPair:any=await room.call(bob,"pair_create");
+    const revokedAuth=await room.pair(revokedPair.code,"revoked-device");
+    const revoked=(await room.authenticate(revokedAuth.token))!;
+    assert.ok(revoked.deviceId);
+    await room.call(revoked,"register",{channelId:channel.id,profiles:[{id:"revoked",name:"Revoked",provider:"grok"}]});
+    sqlite.prepare("UPDATE participants SET onlineAt=0 WHERE profileId='offline'").run();
+    sqlite.prepare("UPDATE participants SET enabled=0 WHERE profileId='disabled'").run();
+    sqlite.prepare("UPDATE devices SET revoked=1 WHERE id=?").run(revoked.deviceId);
+    const excluded=sqlite.prepare("SELECT id FROM participants WHERE profileId IN ('offline','disabled','revoked')").all().map(p=>p.id);
+    const eligible=sqlite.prepare("SELECT id FROM participants WHERE profileId IN ('a','b','c','d','other')").all().map(p=>p.id);
+    for(const [count,expected] of [[3,3],[1,1],[2,2],[10,5],[0,5]]) {
+      const saved:any=await room.call(alice,"channel_update",{channelId:channel.id,heartbeatParticipants:count});
+      const roundId=`heartbeat-${count}`;
+      await room.startRound(alice,saved,null,"heartbeat",roundId);
+      const round:any=sqlite.prepare("SELECT * FROM rounds WHERE id=?").get(roundId);
+      const roster:string[]=JSON.parse(round.roster);
+      assert.equal(roster.length,expected);
+      assert.equal(new Set(roster).size,expected);
+      assert.ok(roster.every(id=>!excluded.includes(id)));
+      if(count===0) assert.deepEqual([...roster].sort(),[...eligible].sort());
+      const starter:any=sqlite.prepare("SELECT * FROM jobs WHERE roundId=?").get(roundId);
+      assert.equal(starter.participantId,roster[0]);
+      assert.equal(starter.phase,"heartbeat");
+      const starterDevice=sqlite.prepare("SELECT deviceId FROM participants WHERE id=?").get(starter.participantId)?.deviceId;
+      const owner=starterDevice===other.deviceId?other:device;
+      sqlite.prepare("UPDATE jobs SET status='running',startedAt=? WHERE id=?").run(Date.now(),starter.id);
+      // A saved setting must not change the roster of an already running round.
+      await room.call(alice,"channel_update",{channelId:channel.id,heartbeatParticipants:count===0?1:0});
+      await room.complete(owner,{jobId:starter.id,text:"a topic"});
+      const replies=sqlite.prepare("SELECT participantId FROM jobs WHERE roundId=? AND phase='review'").all(roundId).map(j=>j.participantId);
+      assert.deepEqual(replies.sort(),roster.slice(1).sort());
+    }
+    const saved:any=await room.call(alice,"channel_update",{channelId:channel.id,heartbeatParticipants:1});
+    await room.startRound(alice,saved,null,"chat","regular-chat");
+    const normal:any=sqlite.prepare("SELECT roster FROM rounds WHERE id='regular-chat'").get();
+    assert.equal(JSON.parse(normal.roster).length,5);
+  } finally {sqlite.close();}
+});
+
 test("pause cancels queued work and stale completion, expired work never requeues, heartbeat is bounded", async () => {
   const { room, sqlite, channel, device } = await setup(),
     channelId = channel.id;

@@ -1,0 +1,1 @@
+ALTER TABLE `channels` ADD `heartbeatParticipants` integer DEFAULT 3 NOT NULL;

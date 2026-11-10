@@ -14,6 +14,7 @@ export const channels = sqliteTable("channels", {
   situationVersion: integer("situationVersion").notNull().default(1),
   heartbeatEnabled: integer("heartbeatEnabled").notNull().default(1),
   heartbeatSeconds: integer("heartbeatSeconds").notNull().default(180),
+  heartbeatParticipants: integer("heartbeatParticipants").notNull().default(3),
   nextHeartbeatAt: integer("nextHeartbeatAt").notNull(),
   paused: integer("paused").notNull().default(0),
   createdAt: integer("createdAt").notNull(),

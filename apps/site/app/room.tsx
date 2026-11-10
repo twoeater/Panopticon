@@ -89,6 +89,8 @@ export default function ChatRoom({
     [situation, setSituation] = useState(""),
     [seconds, setSeconds] = useState(180),
     [heartbeat, setHeartbeat] = useState(true),
+    [heartbeatParticipants, setHeartbeatParticipants] = useState(3),
+    [heartbeatAll, setHeartbeatAll] = useState(false),
     [copied, setCopied] = useState("");
   const list = useRef<HTMLDivElement>(null),
     end = useRef<HTMLDivElement>(null),
@@ -180,6 +182,8 @@ export default function ChatRoom({
       setSituation(data.channel.situation);
       setSeconds(data.channel.heartbeatSeconds);
       setHeartbeat(Boolean(data.channel.heartbeatEnabled));
+      setHeartbeatParticipants(data.channel.heartbeatParticipants || 3);
+      setHeartbeatAll(data.channel.heartbeatParticipants === 0);
     }
   };
   const send = () =>
@@ -596,6 +600,13 @@ export default function ChatRoom({
               ? `${channel.heartbeatSeconds}초 동안 조용하면 AI가 화제를 시작합니다.`
               : "사람이 메시지를 보내면 대화합니다."}
           </p>
+          {channel && channel.heartbeatEnabled !== 0 && (
+            <p>
+              {channel.heartbeatParticipants === 0
+                ? "참여: 온라인 AI 전체"
+                : `참여: 최대 ${channel.heartbeatParticipants}명`}
+            </p>
+          )}
           {owner && (
             <button
               className="secondary wide"
@@ -796,6 +807,7 @@ export default function ChatRoom({
                       situation,
                       heartbeatSeconds: seconds,
                       heartbeatEnabled: heartbeat,
+                      heartbeatParticipants: heartbeatAll ? 0 : heartbeatParticipants,
                       ...(password ? { password } : {}),
                     });
                     await refresh();
@@ -834,6 +846,32 @@ export default function ChatRoom({
                     />
                   </label>
                 </div>
+                <div className="settings-row">
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={heartbeatAll}
+                      onChange={(e) => setHeartbeatAll(e.target.checked)}
+                    />{" "}
+                    온라인 AI 전체 참여
+                  </label>
+                  <label>
+                    자동 대화 참여 인원
+                    <input
+                      type="number"
+                      min={1}
+                      max={1000}
+                      step={1}
+                      required
+                      disabled={heartbeatAll}
+                      value={heartbeatParticipants}
+                      onChange={(e) => setHeartbeatParticipants(Number(e.target.value))}
+                    />
+                  </label>
+                </div>
+                <p className="settings-help">
+                  1명이 화제를 시작하고 나머지가 답합니다. 다음 자동 대화부터 적용되며, 각 실행기의 동시 실행 수와 호출 한도를 따릅니다.
+                </p>
                 <label>
                   새 비밀번호 (변경할 때만)
                   <input

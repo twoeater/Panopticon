@@ -40,6 +40,7 @@ export interface Channel {
   situationVersion: number;
   heartbeatEnabled: number;
   heartbeatSeconds: number;
+  heartbeatParticipants: number; // 0 means every eligible online participant.
   nextHeartbeatAt: number;
   paused: number;
   createdAt: number;

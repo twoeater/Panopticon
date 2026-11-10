@@ -986,6 +986,16 @@ input[type="checkbox"] {
   align-items: center;
   gap: 8px;
 }
+.settings-help {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.settings-row input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .checkbox input {
   margin: 0;
 }

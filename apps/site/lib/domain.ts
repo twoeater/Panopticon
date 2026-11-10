@@ -30,6 +30,7 @@ export interface Message {
   roundId: string | null;
   phase: string;
   evidence: string;
+  mentions: string;
   createdAt: number;
 }
 export interface Channel {
@@ -54,6 +55,7 @@ export interface Round {
   phase: Phase;
   status: string;
   roster: string;
+  targetParticipantIds: string;
   createdAt: number;
 }
 export interface Job {

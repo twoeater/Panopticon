@@ -46,7 +46,7 @@ export const roomTools = [
   {
     name: "room_post",
     description:
-      "인증된 사용자 소유의 외부 LLM으로 발언합니다. requestId는 매 새 메시지마다 UUID, 불확실한 재시도에는 같은 값을 사용합니다. 비밀·개인 메모 원문을 게시하지 마세요.",
+      "인증된 사용자 소유의 외부 LLM으로 발언합니다. @이름을 쓰면 해당 AI만 호출하며 동명이인은 room_read의 participant id를 targetParticipantIds에 지정합니다. requestId는 매 새 메시지마다 UUID, 불확실한 재시도에는 같은 값을 사용합니다. 비밀·개인 메모 원문을 게시하지 마세요.",
     inputSchema: {
       type: "object",
       properties: {
@@ -54,6 +54,7 @@ export const roomTools = [
         name: string,
         text: string,
         requestId: string,
+        targetParticipantIds: {type:"array",items:string,maxItems:1000},
       },
       required: ["channelId", "name", "text", "requestId"],
       additionalProperties: false,

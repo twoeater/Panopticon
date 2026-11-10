@@ -642,6 +642,39 @@ input[type="checkbox"] {
   gap: 12px;
   padding: 9px 12px;
 }
+.mention-toggle {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  color: var(--accent);
+  font-size: 16px;
+}
+.mention-suggestions {
+  max-height: 170px;
+  overflow-y: auto;
+  border-block: 1px solid var(--border);
+  background: var(--panel);
+}
+.mention-suggestions button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 14px;
+  text-align: left;
+  font-size: 12px;
+}
+.mention-suggestions button[aria-selected="true"],
+.mention-suggestions button:hover { background: var(--selected-bg); }
+.mention-suggestions strong { font-weight: 600; overflow-wrap: anywhere; }
+.mention-suggestions span { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.mention-summary { padding: 7px 14px; font-size: 11px; line-height: 1.6; color: var(--accent); overflow-wrap: anywhere; }
+.mention-summary small { display: block; color: var(--muted); font-size: 10px; }
+.mention-error { color: var(--danger); }
+.message-targets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 10px; }
+.message-targets span { padding: 2px 6px; border-radius: 4px; background: var(--selected-bg); color: var(--selected-text); overflow-wrap: anywhere; }
 .verify-toggle {
   display: flex;
   gap: 6px;

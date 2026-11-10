@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import type { Channel, Participant, Message, Job, Round } from "../lib/domain";
 import { MessageMarkdown } from "./message-markdown";
+import { mentionQuery, readMentions, resolveMentions, updateMentionSelections, type MentionSelection } from "../lib/mentions";
 type Snapshot = {
   channel: Channel;
   messages: Message[];
@@ -71,6 +72,10 @@ export default function ChatRoom({
     [selected, setSelected] = useState(""),
     [data, setData] = useState<Snapshot | null>(null);
   const [draft, setDraft] = useState(""),
+    [caret, setCaret] = useState(0),
+    [preferredTargets, setPreferredTargets] = useState<MentionSelection[]>([]),
+    [mentionIndex, setMentionIndex] = useState(0),
+    [mentionDismissed, setMentionDismissed] = useState(false),
     [reply, setReply] = useState<Message | null>(null),
     [verify, setVerify] = useState(false),
     [busy, setBusy] = useState(false),
@@ -92,10 +97,11 @@ export default function ChatRoom({
     [heartbeatParticipants, setHeartbeatParticipants] = useState(3),
     [heartbeatAll, setHeartbeatAll] = useState(false),
     [copied, setCopied] = useState("");
-  const list = useRef<HTMLDivElement>(null),
+  const composer = useRef<HTMLTextAreaElement>(null),
+    list = useRef<HTMLDivElement>(null),
     end = useRef<HTMLDivElement>(null),
     selectedRef = useRef(selected),
-    pending = useRef<{ id: string; text: string; channel: string } | null>(
+    pending = useRef<{ id: string; text: string; channel: string; optionsKey: string } | null>(
       null,
     );
   selectedRef.current = selected;
@@ -135,6 +141,8 @@ export default function ChatRoom({
     setOldestReached(false);
     setShowDetails(false);
     setReply(null);
+    setPreferredTargets([]);
+    setMentionDismissed(true);
     refresh().catch((e) => setError(e.message));
     const t = setInterval(
       () => refresh().catch(() => setConnected(false)),
@@ -189,21 +197,27 @@ export default function ChatRoom({
   const send = () =>
     act(async () => {
       if (!draft.trim() || !selected) return;
+      if (addressed.error) throw new Error(addressed.error);
       const text = draft.trim();
+      const targets = addressed.mentions.map(m=>m.id);
+      const optionsKey = JSON.stringify({targets,verify,replyTo:reply?.id});
       const nonce =
-        pending.current?.text === text && pending.current.channel === selected
+        pending.current?.text === text && pending.current.channel === selected && pending.current.optionsKey === optionsKey
           ? pending.current.id
           : crypto.randomUUID();
-      pending.current = { id: nonce, text, channel: selected };
+      pending.current = { id: nonce, text, channel: selected, optionsKey };
       await api("message_post", {
         channelId: selected,
         text,
         clientMessageId: nonce,
         replyTo: reply?.id,
         verify,
+        targetParticipantIds: targets,
       });
       pending.current = null;
       setDraft("");
+      setPreferredTargets([]);
+      setCaret(0);
       setReply(null);
       setVerify(false);
       await refresh();
@@ -214,6 +228,35 @@ export default function ChatRoom({
       data?.participants.filter((p) => p.onlineAt > data.serverTime - 30000) ||
       [],
     active = data?.rounds.find((r) => r.status === "active");
+  const candidates = data?.participants.filter(p=>p.deviceId!=="mcp") || [];
+  const addressed = resolveMentions(draft,candidates,preferredTargets.map(target=>target.id));
+  const query = mentionDismissed ? null : mentionQuery(draft,caret);
+  const suggestions = query ? candidates.filter(p=>p.name.toLowerCase().startsWith(query.query)).slice(0,8) : [];
+  const selectedSuggestion = Math.min(mentionIndex,Math.max(suggestions.length-1,0));
+  const ownerLabel = (p: Participant) => p.ownerId===user.id ? "나" : data?.members.find(m=>m.userId===p.ownerId)?.name || "다른 사용자";
+  const chooseMention = (p: Participant) => {
+    if (!query) return;
+    const insertion = `@${p.name} `;
+    const next = draft.slice(0,query.start)+insertion+draft.slice(query.end);
+    const position = query.start+insertion.length;
+    setDraft(next);
+    setPreferredTargets(old=>[...updateMentionSelections(draft,next,old),{id:p.id,start:query.start,end:position-1}]);
+    setCaret(position);
+    setMentionIndex(0);
+    setMentionDismissed(true);
+    requestAnimationFrame(()=>{composer.current?.focus();composer.current?.setSelectionRange(position,position);});
+  };
+  const beginMention = () => {
+    const position = composer.current?.selectionStart ?? draft.length;
+    const insertion = `${position && !/\s/.test(draft[position-1]) ? " " : ""}@`;
+    const next = draft.slice(0,position)+insertion+draft.slice(position);
+    setPreferredTargets(old=>updateMentionSelections(draft,next,old));
+    setDraft(next);
+    setCaret(position+insertion.length);
+    setMentionIndex(0);
+    setMentionDismissed(false);
+    requestAnimationFrame(()=>{composer.current?.focus();composer.current?.setSelectionRange(position+insertion.length,position+insertion.length);});
+  };
   return (
     <div className="app-shell">
       <aside className={`sidebar ${sidebar ? "mobile-open" : ""}`}>
@@ -426,6 +469,14 @@ export default function ChatRoom({
                       <div className="message-text">
                         <MessageMarkdown text={m.text} messageId={m.id} />
                       </div>
+                      {readMentions(m.mentions).length > 0 && (
+                        <div className="message-targets" aria-label="호출 대상">
+                          호출: {readMentions(m.mentions).map(target=>{
+                            const participant=data.participants.find(p=>p.id===target.id);
+                            return <span key={target.id}>@{target.name}{participant ? ` · ${ownerLabel(participant)}` : ""}</span>;
+                          })}
+                        </div>
+                      )}
                       {evidence.length > 0 && (
                         <details className="evidence">
                           <summary>
@@ -495,12 +546,29 @@ export default function ChatRoom({
                   </div>
                 )}
                 <textarea
+                  ref={composer}
                   aria-label="채팅 메시지"
-                  placeholder="질문을 던져보세요. 서로 다른 관점이 모입니다."
+                  placeholder="질문을 던져보세요. @이름으로 특정 AI를 호출할 수 있어요."
+                  aria-autocomplete="list"
+                  aria-controls={suggestions.length ? "mention-suggestions" : undefined}
+                  aria-activedescendant={suggestions.length ? `mention-option-${selectedSuggestion}` : undefined}
                   value={draft}
                   maxLength={16000}
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => {setPreferredTargets(old=>updateMentionSelections(draft,e.target.value,old));setDraft(e.target.value);setCaret(e.target.selectionStart);setMentionDismissed(false);setMentionIndex(0);}}
+                  onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                   onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return;
+                    if (suggestions.length) {
+                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setMentionIndex((selectedSuggestion+(e.key==="ArrowDown"?1:suggestions.length-1))%suggestions.length);
+                        return;
+                      }
+                      if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+                        e.preventDefault();chooseMention(suggestions[selectedSuggestion]);return;
+                      }
+                      if (e.key === "Escape") {e.preventDefault();setMentionDismissed(true);return;}
+                    }
                     if (
                       e.key === "Enter" &&
                       !e.shiftKey &&
@@ -511,7 +579,26 @@ export default function ChatRoom({
                     }
                   }}
                 />
+                {suggestions.length > 0 && (
+                  <div id="mention-suggestions" className="mention-suggestions" role="listbox" aria-label="호출할 AI">
+                    {suggestions.map((p,index)=>(
+                      <button key={p.id} id={`mention-option-${index}`} type="button" role="option" aria-selected={index===selectedSuggestion}
+                        onMouseDown={e=>e.preventDefault()} onClick={()=>chooseMention(p)}>
+                        <strong>@{p.name}</strong><span>{ownerLabel(p)} · {online.some(x=>x.id===p.id)?"온라인":"오프라인"}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {(addressed.mentions.length > 0 || addressed.error) && (
+                  <div className={`mention-summary ${addressed.error ? "mention-error" : ""}`} role="status">
+                    {addressed.error || <>
+                      <span>호출: {addressed.mentions.map(m=>{const p=candidates.find(p=>p.id===m.id)!;return `@${m.name} (${ownerLabel(p)})`;}).join(", ")}</span>
+                      <small>{addressed.mentions.some(m=>online.some(p=>p.id===m.id)) ? "지정 AI만 응답 · 대화 기록은 공유됩니다." : "대상이 오프라인입니다. 대화 기록만 저장됩니다."}</small>
+                    </>}
+                  </div>
+                )}
                 <div className="composer-tools">
+                  <button type="button" className="mention-toggle" aria-label="AI 호출 대상 선택" onClick={beginMention}>@</button>
                   <button
                     type="button"
                     className={`verify-toggle ${verify ? "on" : ""}`}
@@ -525,7 +612,7 @@ export default function ChatRoom({
                     type="submit"
                     className="send"
                     aria-label="메시지 보내기"
-                    disabled={busy || !draft.trim()}
+                    disabled={busy || !draft.trim() || Boolean(addressed.error)}
                   >
                     <ArrowUp size={19} />
                   </button>

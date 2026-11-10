@@ -21,6 +21,7 @@ import {
   rateLimit,
 } from "./security.ts";
 import { isActiveProvider } from "./providers.ts";
+import { resolveMentions, readMentions } from "./mentions.ts";
 
 const channelColumns =
   "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,heartbeatParticipants,nextHeartbeatAt,paused,createdAt";
@@ -375,6 +376,7 @@ export class RoomService {
         if (previous) return previous;
         await rateLimit(this.db, `post:${actor.id}`, 30, 60000);
         const text = requiredString(args.text, "메시지", 16000);
+        const mentions = await this.messageMentions(channelId, text, args.targetParticipantIds);
         const replyTo = typeof args.replyTo === "string" ? args.replyTo : null;
         if (
           replyTo &&
@@ -390,13 +392,14 @@ export class RoomService {
             "답장 대상이 같은 채널에 없습니다.",
           );
         await this.run(
-          "INSERT OR IGNORE INTO messages (id,channelId,ownerId,author,kind,text,replyTo,phase,createdAt) VALUES (?,?,?,?,'human',?,?,'chat',?)",
+          "INSERT OR IGNORE INTO messages (id,channelId,ownerId,author,kind,text,replyTo,phase,mentions,createdAt) VALUES (?,?,?,?,'human',?,?,'chat',?,?)",
           messageId,
           channelId,
           actor.id,
           actor.name,
           text,
           replyTo,
+          JSON.stringify(mentions),
           now(),
         );
         await this.run(
@@ -411,6 +414,7 @@ export class RoomService {
             messageId,
             args.verify === true ? "verify" : "chat",
             `question:${messageId}`,
+            mentions.map(m=>m.id),
           );
         return this.one<Message>(
           "SELECT * FROM messages WHERE id=?",
@@ -425,14 +429,14 @@ export class RoomService {
         if (channel.paused)
           throw new AppError(409, "paused", "채널이 일시정지 상태입니다.");
         const triggerId = requiredString(args.messageId, "대상 메시지", 250);
-        if (
-          !(await this.one(
-            "SELECT id FROM messages WHERE id=? AND channelId=?",
-            triggerId,
-            channel.id,
-          ))
-        )
+        const trigger = await this.one<Message>("SELECT * FROM messages WHERE id=? AND channelId=?", triggerId, channel.id);
+        if (!trigger)
           throw new AppError(404, "not_found", "메시지를 찾을 수 없습니다.");
+        let targets = readMentions(trigger.mentions).map(m=>m.id);
+        if (!targets.length && trigger.roundId) {
+          const parent = await this.one<Round>("SELECT * FROM rounds WHERE id=? AND channelId=?",trigger.roundId,channel.id);
+          targets = JSON.parse(parent?.targetParticipantIds || "[]");
+        }
         return this.startRound(
           actor,
           channel,
@@ -441,6 +445,7 @@ export class RoomService {
           await digest(
             `verify:${actor.id}:${channel.id}:${requiredString(args.requestId, "요청 ID", 100)}`,
           ),
+          targets,
         );
       }
       case "pair_create": {
@@ -501,6 +506,9 @@ export class RoomService {
         const messageId = await digest(
           `mcp-msg:${actor.id}:${channel.id}:${requiredString(args.requestId, "요청 ID", 100)}`,
         );
+        if (await this.one("SELECT id FROM messages WHERE id=?",messageId)) return {id:messageId};
+        const text = requiredString(args.text, "메시지", 16000);
+        const mentions = await this.messageMentions(channel.id,text,args.targetParticipantIds);
         await this.run(
           "INSERT INTO participants (id,channelId,ownerId,deviceId,profileId,name,provider,onlineAt,enabled) VALUES (?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET onlineAt=excluded.onlineAt,enabled=1",
           participantId,
@@ -513,13 +521,14 @@ export class RoomService {
           now(),
         );
         await this.run(
-          "INSERT OR IGNORE INTO messages (id,channelId,ownerId,participantId,author,kind,text,phase,createdAt) VALUES (?,?,?,?,?,'llm',?,'external',?)",
+          "INSERT OR IGNORE INTO messages (id,channelId,ownerId,participantId,author,kind,text,phase,mentions,createdAt) VALUES (?,?,?,?,?,'llm',?,'external',?,?)",
           messageId,
           channel.id,
           actor.id,
           participantId,
           `${actor.name} / ${name}`,
-          requiredString(args.text, "메시지", 16000),
+          text,
+          JSON.stringify(mentions),
           now(),
         );
         if (!channel.paused)
@@ -529,6 +538,7 @@ export class RoomService {
             messageId,
             "chat",
             `external:${messageId}`,
+            mentions.map(m=>m.id),
           );
         return { id: messageId };
       }
@@ -652,12 +662,26 @@ export class RoomService {
       actor.deviceId,
     );
   }
+  async messageMentions(channelId: string, text: string, preferred: unknown) {
+    const candidates = await this.all<Participant>(
+      "SELECT p.* FROM participants p JOIN devices d ON d.id=p.deviceId WHERE p.channelId=? AND p.enabled=1 AND d.revoked=0",
+      channelId,
+    );
+    if (preferred !== undefined && (!Array.isArray(preferred) || preferred.length > 1000 || preferred.some(id=>typeof id!=="string" || !candidates.some(p=>p.id===id))))
+      throw new AppError(400,"invalid_mentions","호출 대상은 같은 채널에 등록된 AI여야 합니다.");
+    const resolved = resolveMentions(text,candidates,(preferred || []) as string[]);
+    if (resolved.error) throw new AppError(400,"invalid_mentions",resolved.error);
+    if (Array.isArray(preferred) && preferred.some(id=>!resolved.mentions.some(m=>m.id===id)))
+      throw new AppError(400,"invalid_mentions","호출 대상과 메시지의 @이름이 일치하지 않습니다.");
+    return resolved.mentions;
+  }
   async startRound(
     actor: Actor,
     channel: Channel,
     triggerId: string | null,
     kind: Round["kind"],
     roundId: string,
+    targetParticipantIds: string[] = [],
   ) {
     const existing = await this.one<Round>(
       "SELECT * FROM rounds WHERE id=?",
@@ -670,6 +694,7 @@ export class RoomService {
       channel.id,
       now() - 30000,
     );
+    if (targetParticipantIds.length) roster = roster.filter(p=>targetParticipantIds.includes(p.id));
     if (kind === "heartbeat") {
       const offset =
         Math.floor(now() / (channel.heartbeatSeconds * 1000)) %
@@ -684,7 +709,7 @@ export class RoomService {
     const statements = [
       this.db
         .prepare(
-          "INSERT OR IGNORE INTO rounds (id,channelId,requestorId,triggerId,kind,phase,status,roster,createdAt) VALUES (?,?,?,?,?,?,?,?,?)",
+          "INSERT OR IGNORE INTO rounds (id,channelId,requestorId,triggerId,kind,phase,status,roster,targetParticipantIds,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(
           roundId,
@@ -695,6 +720,7 @@ export class RoomService {
           phase,
           roster.length ? "active" : "no_participants",
           JSON.stringify(roster.map((p) => p.id)),
+          JSON.stringify(targetParticipantIds),
           time,
         ),
     ];

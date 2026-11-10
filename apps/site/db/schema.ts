@@ -84,6 +84,7 @@ export const messages = sqliteTable(
     roundId: text("roundId"),
     phase: text("phase").notNull(),
     evidence: text("evidence").notNull().default("[]"),
+    mentions: text("mentions").notNull().default("[]"),
     createdAt: integer("createdAt").notNull(),
   },
   (t) => [
@@ -102,6 +103,7 @@ export const rounds = sqliteTable(
     phase: text("phase").notNull(),
     status: text("status").notNull(),
     roster: text("roster").notNull(),
+    targetParticipantIds: text("targetParticipantIds").notNull().default("[]"),
     createdAt: integer("createdAt").notNull(),
   },
   (t) => [index("round_channel").on(t.channelId, t.status)],

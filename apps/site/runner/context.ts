@@ -1,6 +1,7 @@
 import type { TurnJob } from "../lib/domain.ts";
 import type { Profile } from "./config.ts";
 import { LocalFiles } from "./files.ts";
+import { readMentions } from "../lib/mentions.ts";
 const phases: Record<string, string> = {
   chat: "질문에 자신의 독립적인 답변을 하세요. 현재 단계의 다른 답변은 아직 보이지 않습니다.",
   review:
@@ -28,6 +29,7 @@ export async function buildContext(
     author: m.author,
     text: m.text,
     evidence: m.evidence,
+    mentions: readMentions(m.mentions),
   });
   const input = JSON.stringify({
     sharedSituation: turn.channel.situation,

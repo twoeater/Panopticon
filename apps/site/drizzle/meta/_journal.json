@@ -15,6 +15,13 @@
       "when": 1794318481703,
       "tag": "0001_silent_doorman",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794319628580,
+      "tag": "0002_faulty_epoch",
+      "breakpoints": true
     }
   ]
 }

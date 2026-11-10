@@ -240,8 +240,8 @@ export function resolveApiConnection(profile: Profile) {
   let url: URL;
   try { url = new URL(address); }
   catch { throw new Error("baseURL에 올바른 API 기본 주소를 입력해 주세요."); }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
-    throw new Error("baseURL은 HTTPS 또는 로컬 loopback HTTP 주소여야 합니다.");
+  if (url.protocol !== "https:" && url.protocol !== "http:")
+    throw new Error("baseURL은 HTTP 또는 HTTPS 주소여야 합니다.");
   if (url.username || url.password || url.search || url.hash)
     throw new Error("baseURL에 인증 정보·쿼리·프래그먼트를 포함할 수 없습니다.");
   if (/\/(?:responses|chat\/completions|messages)\/*$/.test(url.pathname))

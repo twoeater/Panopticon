@@ -4,6 +4,7 @@ import { resolveApiKey, resolveApiConnection, type Profile } from "./config.ts";
 import { providers } from "../lib/providers.ts";
 import { apiTurn } from "./api.ts";
 import { RpcProcess, runProcess } from "./process.ts";
+import { grokTurn } from "./grok.ts";
 export interface ModelResult {
   text: string;
   usage: unknown;
@@ -216,35 +217,5 @@ export async function runModel(
       sources: [],
     };
   }
-  const result = await runProcess(
-    profile.binary || "grok",
-    [
-      "--cwd",
-      cwd,
-      "-p",
-      `${instructions}\n\n${input}`,
-      "--output-format",
-      "json",
-      "--tools",
-      profile.webSearch ? "web_search" : "",
-      "--deny",
-      "mcp__*",
-      "--no-subagents",
-      "--max-turns",
-      "5",
-      "--permission-mode",
-      "dontAsk",
-      "--sandbox",
-      "strict",
-      ...(profile.model ? ["--model", profile.model] : []),
-    ],
-    { cwd, signal },
-  );
-  const response = JSON.parse(result.stdout);
-  if (response.is_error || response.error) throw new Error("Grok 호출 실패");
-  return {
-    text: response.result || response.text || response.content || "",
-    usage: response.usage || null,
-    sources: [],
-  };
+  return grokTurn(profile, instructions, input, cwd, signal);
 }

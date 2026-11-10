@@ -41,6 +41,12 @@ test("provider defaults preserve existing transports and isolate EXAONE/compatib
   assert.equal(resolveApiKey(profile({ provider: "exaone", apiKey: "" }), { EXAONE_API_KEY: "exaone-test", OPENAI_API_KEY: "openai-test" }), "exaone-test");
   assert.equal(resolveApiKey(profile({ provider: "openai-compatible", apiKey: "" }), { OPENAI_API_KEY: "openai-test" }), undefined);
   assert.equal(resolveApiConnection(profile({ provider: "openai-compatible", baseURL: "http://127.0.0.1:1234/custom/v1/" })).baseURL, "http://127.0.0.1:1234/custom/v1");
+  for (const address of ["http://192.0.2.12/", "http://gateway.example:8080/proxy/v1/", "http://[2001:db8::1]:8080/v1/"]) {
+    for (const provider of ["anthropic", "openai-compatible"] as const) {
+      const parsed = parseConfig({ profiles: [profile({ provider, baseURL: address })] });
+      assert.equal(resolveApiConnection(parsed.profiles[0]).baseURL, address.replace(/\/+$/, ""));
+    }
+  }
   assert.equal(parseConfig(defaults).profiles.find(p => p.provider === "exaone")?.enabled, false);
 });
 
@@ -53,7 +59,8 @@ test("invalid provider/transport/format/address combinations fail without exposi
     { apiFormat: "messages" }, { apiFormat: "invalid" },
     { apiFormat: "chat-completions", webSearch: true },
     { baseURL: 42 }, { baseURL: "not-a-url-secret" },
-    { baseURL: "http://public.example/v1" }, { baseURL: "file:///tmp/api" },
+    { baseURL: "ftp://api.example/v1" }, { baseURL: "ws://api.example/v1" }, { baseURL: "file:///tmp/api" },
+    { baseURL: "http://name:private-secret@api.example/v1" },
     { baseURL: "https://name:private-secret@api.example/v1" },
     { baseURL: "https://api.example/v1?key=private-secret" },
     { baseURL: "https://api.example/v1#private-secret" },
@@ -103,11 +110,11 @@ test("Chat Completions rejects truncated or reasoning-only responses without ret
   }
 });
 
-test("Anthropic Messages uses the overridden endpoint and existing search tools", async () => {
+test("Anthropic Messages uses the overridden HTTP endpoint and existing search tools", async () => {
   const mock = mockSDK({ content: [{ type: "text", text: "answer" }, { type: "web_search_tool_result", content: [] }], usage: { input_tokens: 2 } });
-  const result = await apiTurn(profile({ provider: "anthropic", baseURL: "https://anthropic-gateway.example", webSearch: true, maxOutputTokens: 777 }), "persona", "question", new AbortController().signal, mock.load);
+  const result = await apiTurn(profile({ provider: "anthropic", baseURL: "http://anthropic-gateway.example", webSearch: true, maxOutputTokens: 777 }), "persona", "question", new AbortController().signal, mock.load);
   assert.equal(mock.packageName, "@anthropic-ai/sdk");
-  assert.equal(mock.options.baseURL, "https://anthropic-gateway.example");
+  assert.equal(mock.options.baseURL, "http://anthropic-gateway.example");
   assert.equal(mock.options.maxRetries, 0);
   assert.equal(mock.calls[0].format, "messages");
   assert.equal(mock.calls[0].body.max_tokens, 777);

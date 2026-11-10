@@ -62,6 +62,8 @@ npm run runner -- init
 
 서버 자체에도 발언·입장 시도 속도 제한이 있습니다. 로컬 한도는 SQLite에 저장하므로 재시작해도 유지됩니다. 시작 후 완료 여부가 불확실해진 모델 호출은 자동으로 재호출하지 않습니다. 이미 받은 답의 서버 전달만 같은 작업 ID로 재시도합니다.
 
+Grok CLI에는 선택된 대화·현재 요청·검증 근거를 임시 파일로 전달합니다(`--prompt-file`). Windows 명령줄 길이 제한 때문에 대화를 줄일 필요가 없으며, 임시 파일은 완료·실패·취소 시 삭제됩니다.
+
 ## 개인 파일
 
 ```text
@@ -151,7 +153,7 @@ Anthropic은 `provider: "anthropic"`, Grok은 `provider: "grok"`으로 설정하
 - **`webSearch`**: 이 실행기의 Chat Completions 연결에서는 `false`로 설정합니다. 성격·기억·코드 실행·상호 검증은 그대로 사용할 수 있습니다.
 - **`maxOutputTokens`**: API 응답의 출력 토큰 한도입니다. 기본값은 EXAONE 16,384, 나머지 4,096입니다. EXAONE은 추론 토큰도 이 한도에 포함되므로 답변이 잘리면 값을 늘려 주세요.
 
-API 주소는 HTTPS를 사용하며 로컬 서버는 `http://localhost:포트/v1`, `http://127.0.0.1:포트/v1`도 사용할 수 있습니다. 인증 정보는 URL이 아닌 `apiKey`에 넣습니다. **`serverUrl`은 채팅방 서버 주소**이므로 모델 endpoint를 바꿀 때 수정하지 않습니다. 이 API 설정은 CLI 연결에는 적용되지 않습니다.
+API 주소는 HTTP와 HTTPS를 모두 지원합니다. 로컬·내부망 IP, 포트, 프록시 경로도 지정할 수 있습니다. 인증 정보는 URL이 아닌 `apiKey`에 넣습니다. **`serverUrl`은 채팅방 서버 주소**이므로 모델 endpoint를 바꿀 때 수정하지 않습니다. 이 API 설정은 CLI 연결에는 적용되지 않습니다.
 
 ### EXAONE 참가자 예제
 

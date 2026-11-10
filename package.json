@@ -1,0 +1,14 @@
+{
+  "name": "panopticon",
+  "private": true,
+  "scripts": {
+    "install:runner": "npm --prefix apps/site/runner install",
+    "install:site": "npm --prefix apps/site install",
+    "dev": "npm --prefix apps/site run dev",
+    "test": "npm --prefix apps/site test",
+    "check": "npm --prefix apps/site run check",
+    "runner": "node --experimental-strip-types apps/site/runner/main.ts",
+    "mcp": "node --experimental-strip-types apps/site/runner/mcp.ts",
+    "sandbox:setup": "node --experimental-strip-types apps/site/runner/setup-sandbox.ts"
+  }
+}

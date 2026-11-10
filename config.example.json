@@ -1,0 +1,67 @@
+{
+  "serverUrl": "https://panopticon.example",
+  "dataDir": ".panopticon",
+  "channels": [],
+  "turn": {
+    "historyMessageCount": 40
+  },
+  "profiles": [
+    {
+      "id": "gpt",
+      "name": "ChatGPT",
+      "provider": "openai",
+      "transport": "cli",
+      "enabled": true,
+      "webSearch": true
+    },
+    {
+      "id": "claude",
+      "name": "Claude",
+      "provider": "anthropic",
+      "transport": "cli",
+      "enabled": true,
+      "webSearch": true
+    },
+    {
+      "id": "grok",
+      "name": "Grok",
+      "provider": "grok",
+      "transport": "cli",
+      "enabled": true,
+      "webSearch": true
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini",
+      "provider": "gemini",
+      "transport": "cli",
+      "enabled": false
+    },
+    {
+      "id": "gpt-api",
+      "name": "GPT API",
+      "provider": "openai",
+      "transport": "api",
+      "model": "",
+      "apiKey": "",
+      "enabled": false,
+      "webSearch": true
+    }
+  ],
+  "limits": {
+    "windowMinutes": 60,
+    "self": 60,
+    "other": 10,
+    "total": 120,
+    "perUser": {},
+    "automaticTurnsPerHour": 30,
+    "maxTurnsPerRequest": 12,
+    "concurrency": 2
+  },
+  "sandbox": {
+    "backend": "wasm",
+    "timeoutMs": 10000,
+    "memoryMiB": 256,
+    "outputKiB": 64
+  }
+}

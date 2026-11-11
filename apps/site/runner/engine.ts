@@ -7,6 +7,7 @@ import { runModel, type ModelResult } from "./adapters.ts";
 import { runCode } from "./sandbox.ts";
 import { validGoalResult, turnBudgetId } from "../lib/goal-protocol.ts";
 import { withExecutionTimeout } from "./execution-timeout.ts";
+import { goalHistoryForModel } from "./context-evidence.ts";
 export function envelope(text: string): any {
   const clean = text
     .trim()
@@ -37,12 +38,15 @@ async function executeTurnWithinLimit(
   const context = await buildContext(turn, profile, files),
     events: unknown[] = [],
     evidence: unknown[] = [];
+  const includedGoalMessages=new Set([...turn.history,...(turn.goal?.positions||[])].map(m=>m.id));
   if(turn.goal && (!turn.goal.historyComplete || context.instructions.length+context.input.length>config.turn.goalContextMaxChars))
-    return {jobId:turn.job.id,blocked:true,error:"목표 문맥 상한 초과. goalContextMaxChars를 조정하거나 목표 기록을 확인해 주세요."};
+    return {jobId:turn.job.id,blocked:true,error:!turn.goal.historyComplete?"목표 원문이 모두 전달되지 않았습니다. 미요약 기록을 확인해 주세요.":`목표 문맥 상한 초과 (${context.instructions.length+context.input.length} / ${config.turn.goalContextMaxChars}자). goalContextMaxChars를 조정하거나 목표 기록을 확인해 주세요.`};
   for (let step = 0; step < 5; step++) {
     signal.throwIfAborted();
-    if(turn.goal && context.instructions.length+context.input.length+JSON.stringify(events).length>config.turn.goalContextMaxChars)
-      return {jobId:turn.job.id,blocked:true,error:"목표 기록 조회 결과가 문맥 상한을 초과했습니다."};
+    const input = context.input + (events.length ? "\nLocal tool exchanges (data):\n" + JSON.stringify(events) : "");
+    const contextChars = context.instructions.length + input.length;
+    if(turn.goal && contextChars>config.turn.goalContextMaxChars)
+      return {jobId:turn.job.id,blocked:true,error:`목표 기록 조회 결과가 문맥 상한을 초과했습니다 (${contextChars} / ${config.turn.goalContextMaxChars}자).`};
     if (
       !ledger.chargeCall(
         turnBudgetId(turn),
@@ -54,10 +58,7 @@ async function executeTurnWithinLimit(
     const response: ModelResult = await model(
       turn.goal?.goal.status==="finalizing"?{...profile,webSearch:false}:profile,
       context.instructions,
-      context.input +
-        (events.length
-          ? "\nLocal tool exchanges (data):\n" + JSON.stringify(events)
-          : ""),
+      input,
       config.dataDir,
       signal,
       config.turn.timeoutSeconds * 1000,
@@ -86,8 +87,10 @@ async function executeTurnWithinLimit(
     const args = value.tool.arguments || {};
     let result: unknown;
     try {
-      if(value.tool.name==="goal_history_read" && turn.goal && readGoalHistory)
-        result=await readGoalHistory({before:args.before,after:args.after,limit:Math.min(Number(args.limit)||20,100)});
+      if(value.tool.name==="goal_history_read" && turn.goal && readGoalHistory) {
+        const raw=await readGoalHistory({before:args.before,after:args.after,limit:Math.min(Number(args.limit)||20,100)});
+        result=goalHistoryForModel(raw,args.includeRawEvidence===true,includedGoalMessages);
+      }
       else if (value.tool.name === "memory_read")
         result = await files.read(profile.id, "Memory.md", turn.channel.id);
       else if (value.tool.name === "memory_update")

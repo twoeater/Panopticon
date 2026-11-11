@@ -6,6 +6,7 @@ import { Ledger } from "./ledger.ts";
 import { runModel, type ModelResult } from "./adapters.ts";
 import { runCode } from "./sandbox.ts";
 import { validGoalResult, turnBudgetId } from "../lib/goal-protocol.ts";
+import { withExecutionTimeout } from "./execution-timeout.ts";
 export function envelope(text: string): any {
   const clean = text
     .trim()
@@ -18,7 +19,12 @@ export function envelope(text: string): any {
   } catch {}
   return { text };
 }
-export async function executeTurn(
+export function executeTurn(...args: Parameters<typeof executeTurnWithinLimit>) {
+  const [config, profile, turn, files, ledger, signal, model, readGoalHistory] = args;
+  return withExecutionTimeout(config.turn.timeoutSeconds * 1000, signal, limitedSignal =>
+    executeTurnWithinLimit(config, profile, turn, files, ledger, limitedSignal, model, readGoalHistory));
+}
+async function executeTurnWithinLimit(
   config: Config,
   profile: Profile,
   turn: TurnJob,
@@ -54,7 +60,9 @@ export async function executeTurn(
           : ""),
       config.dataDir,
       signal,
+      config.turn.timeoutSeconds * 1000,
     );
+    signal.throwIfAborted();
     evidence.push({
       type: "usage",
       provider: profile.provider,

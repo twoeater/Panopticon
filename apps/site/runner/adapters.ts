@@ -5,6 +5,7 @@ import { providers } from "../lib/providers.ts";
 import { apiTurn } from "./api.ts";
 import { RpcProcess, runProcess } from "./process.ts";
 import { grokTurn } from "./grok.ts";
+import { DEFAULT_TURN_TIMEOUT_SECONDS } from "../lib/execution-limits.ts";
 export interface ModelResult {
   text: string;
   usage: unknown;
@@ -57,7 +58,9 @@ async function codexTurn(
   input: string,
   cwd: string,
   signal: AbortSignal,
+  timeoutMs: number,
 ): Promise<ModelResult> {
+  signal.throwIfAborted();
   const disabledFeatures = [
     "shell_tool",
     "unified_exec",
@@ -114,6 +117,7 @@ async function codexTurn(
       config,
       baseInstructions: instructions,
     });
+    signal.throwIfAborted();
     let text = "",
       usage: unknown = null;
     const sources: unknown[] = [];
@@ -121,7 +125,7 @@ async function codexTurn(
       const timeout = setTimeout(() => {
         rpc.close();
         reject(new Error("Codex 응답 시간 초과"));
-      }, 180000);
+      }, timeoutMs);
       const onAbort = () => {
         clearTimeout(timeout);
         reject(new Error("실행 취소"));
@@ -176,17 +180,18 @@ export async function runModel(
   input: string,
   dataDir: string,
   signal: AbortSignal,
+  timeoutMs = DEFAULT_TURN_TIMEOUT_SECONDS * 1000,
 ): Promise<ModelResult> {
   if (profile.provider === "gemini")
     throw new Error("Gemini는 초기 버전에서 호출하지 않습니다.");
   if (profile.transport === "api")
-    return apiTurn(profile, instructions, input, signal);
+    return apiTurn(profile, instructions, input, signal, undefined, timeoutMs);
   if (!providers[profile.provider].cli)
     throw new Error("이 provider는 API 연결만 지원합니다.");
   const cwd = path.join(dataDir, "sessions", profile.id);
   await mkdir(cwd, { recursive: true });
   if (profile.provider === "openai")
-    return codexTurn(profile, instructions, input, cwd, signal);
+    return codexTurn(profile, instructions, input, cwd, signal, timeoutMs);
   if (profile.provider === "anthropic") {
     const result = await runProcess(
       profile.binary || "claude",
@@ -206,7 +211,7 @@ export async function runModel(
         instructions,
         ...(profile.model ? ["--model", profile.model] : []),
       ],
-      { cwd, input, signal },
+      { cwd, input, signal, timeoutMs },
     );
     const response = JSON.parse(result.stdout);
     if (response.is_error)
@@ -217,5 +222,5 @@ export async function runModel(
       sources: [],
     };
   }
-  return grokTurn(profile, instructions, input, cwd, signal);
+  return grokTurn(profile, instructions, input, cwd, signal, undefined, timeoutMs);
 }

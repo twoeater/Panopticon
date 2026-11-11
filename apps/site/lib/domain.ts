@@ -75,6 +75,7 @@ export interface Job {
   status: string;
   createdAt: number;
   startedAt: number | null;
+  timeoutAt?: number | null;
   error: string | null;
 }
 export interface TurnJob {

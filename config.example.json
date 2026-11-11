@@ -5,7 +5,8 @@
   "turn": {
     "historyMessageCount": 40,
     "goalHistoryMessageCount": 40,
-    "goalContextMaxChars": 64000
+    "goalContextMaxChars": 64000,
+    "timeoutSeconds": 180
   },
   "profiles": [
     {

@@ -7,6 +7,27 @@ import { LocalFiles } from "../runner/files.ts";
 import { Ledger } from "../runner/ledger.ts";
 import { defaults, loadConfig, parseConfig, resolveApiKey } from "../runner/config.ts";
 import { runCode } from "../runner/sandbox.ts";
+import { ExecutionTimeoutError, withExecutionTimeout } from "../runner/execution-timeout.ts";
+
+test("execution timeout defaults and validation keep durations finite and explicit", () => {
+  assert.equal(parseConfig({}).turn.timeoutSeconds,180);
+  assert.equal(parseConfig({turn:{timeoutSeconds:600}}).turn.timeoutSeconds,600);
+  for(const timeoutSeconds of [-1,0,9,3601,1.5,"600",null])
+    assert.throws(()=>parseConfig({turn:{timeoutSeconds}}),/turn.timeoutSeconds/);
+});
+
+test("execution timeout aborts the operation and preserves timeout versus external cancellation",async()=>{
+  let aborted=false;
+  await assert.rejects(withExecutionTimeout(25,new AbortController().signal,signal=>new Promise((_,reject)=>{
+    signal.addEventListener("abort",()=>{aborted=true;reject(new Error("SDK replaced the abort reason"));},{once:true});
+  })),error=>error instanceof ExecutionTimeoutError&&/turn.timeoutSeconds/.test(error.message));
+  assert.equal(aborted,true);
+  const cancelled=new AbortController(),reason=new Error("user cancelled");cancelled.abort(reason);
+  await assert.rejects(withExecutionTimeout(25,cancelled.signal,async()=>{throw new Error("must not run");}),error=>error===reason);
+  let completedSignal:AbortSignal|undefined;
+  assert.equal(await withExecutionTimeout(20,new AbortController().signal,async signal=>{completedSignal=signal;return "done";}),"done");
+  await new Promise(resolve=>setTimeout(resolve,35));assert.equal(completedSignal!.aborted,false,"successful operations clear the timer");
+});
 test('skipped acknowledgements survive restart without charging quota or replacing a completed answer', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'panopticon-')), file=path.join(dir,'usage.sqlite'); let ledger = new Ledger(file);
   try {

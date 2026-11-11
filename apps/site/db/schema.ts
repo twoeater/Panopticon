@@ -126,6 +126,7 @@ export const jobs = sqliteTable(
     status: text("status").notNull(),
     createdAt: integer("createdAt").notNull(),
     startedAt: integer("startedAt"),
+    timeoutAt: integer("timeoutAt"),
     error: text("error"),
     resultToken: text("resultToken"),
   },

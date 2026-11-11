@@ -10,6 +10,7 @@ import { Ledger } from "./ledger.ts";
 import { probe } from "./adapters.ts";
 import { call, loadAuth, RequestError } from "./client.ts";
 import { executeTurn } from "./engine.ts";
+import { ExecutionTimeoutError } from "./execution-timeout.ts";
 import { turnBudgetId } from "../lib/goal-protocol.ts";
 import { runProcess } from "./process.ts";
 import { setupSandbox } from "./setup-sandbox.ts";
@@ -243,6 +244,7 @@ async function main() {
             channelId,
             historyMessageCount: config.turn.historyMessageCount,
             goalHistoryMessageCount: config.turn.goalHistoryMessageCount,
+            turnTimeoutSeconds: config.turn.timeoutSeconds,
             capabilities: ["goals-v1"],
             claim: running.size < config.limits.concurrency,
           });
@@ -280,11 +282,12 @@ async function main() {
               .then((result) => {
                 ledger.finish(turn.job.id, result);
               })
-              .catch(() => {
+              .catch((error) => {
                 ledger.finish(turn.job.id, {
                   jobId: turn.job.id,
                   error: controller.signal.aborted
                     ? "작업이 취소되었습니다."
+                    : error instanceof ExecutionTimeoutError ? error.message
                     : `${profile.name} 호출 실패. 로컬 로그인·모델 설정·사용량을 확인하세요. 자동 재시도하지 않았습니다.`,
                 });
               })

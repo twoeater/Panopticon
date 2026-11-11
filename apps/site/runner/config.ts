@@ -1,6 +1,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isProvider, providers, type Provider, type ApiFormat } from "../lib/providers.ts";
+import { DEFAULT_TURN_TIMEOUT_SECONDS, MIN_TURN_TIMEOUT_SECONDS, MAX_TURN_TIMEOUT_SECONDS } from "../lib/execution-limits.ts";
 export type Profile = {
   id: string;
   name: string;
@@ -20,7 +21,7 @@ export interface Config {
   serverUrl: string;
   dataDir: string;
   channels: string[];
-  turn: { historyMessageCount: number; goalHistoryMessageCount: number; goalContextMaxChars: number };
+  turn: { historyMessageCount: number; goalHistoryMessageCount: number; goalContextMaxChars: number; timeoutSeconds: number };
   profiles: Profile[];
   limits: {
     windowMinutes: number;
@@ -43,7 +44,7 @@ export const defaults: Config = {
   serverUrl: "https://panopticon.example",
   dataDir: ".panopticon",
   channels: [],
-  turn: { historyMessageCount: 40, goalHistoryMessageCount: 40, goalContextMaxChars: 64000 },
+  turn: { historyMessageCount: 40, goalHistoryMessageCount: 40, goalContextMaxChars: 64000, timeoutSeconds: DEFAULT_TURN_TIMEOUT_SECONDS },
   profiles: [
     {
       id: "gpt",
@@ -146,7 +147,8 @@ export function parseConfig(raw: any, base = process.cwd()): Config {
   int(value.turn.historyMessageCount, 0, 1000, "turn.historyMessageCount");
   int(value.turn.goalHistoryMessageCount, 0, 1000, "turn.goalHistoryMessageCount");
   int(value.turn.goalContextMaxChars, 8000, 1000000, "turn.goalContextMaxChars");
-  if (Object.keys(value.turn).some((k) => !["historyMessageCount","goalHistoryMessageCount","goalContextMaxChars"].includes(k)))
+  int(value.turn.timeoutSeconds, MIN_TURN_TIMEOUT_SECONDS, MAX_TURN_TIMEOUT_SECONDS, "turn.timeoutSeconds");
+  if (Object.keys(value.turn).some((k) => !["historyMessageCount","goalHistoryMessageCount","goalContextMaxChars","timeoutSeconds"].includes(k)))
     throw new Error("지원하지 않는 turn 설정입니다.");
   if (
     !Array.isArray(value.channels) ||

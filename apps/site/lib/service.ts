@@ -23,6 +23,7 @@ import {
 import { isActiveProvider } from "./providers.ts";
 import { resolveMentions, readMentions } from "./mentions.ts";
 import { Goals } from "./goals.ts";
+import { validTurnTimeout, JOB_DELIVERY_GRACE_MS, LEGACY_JOB_TIMEOUT_MS } from "./execution-limits.ts";
 
 const channelColumns =
   "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,heartbeatParticipants,nextHeartbeatAt,paused,createdAt";
@@ -827,6 +828,18 @@ export class RoomService {
       );
     await this.db.batch(statements);
   }
+  async expireJobs(channelId: string) {
+    const time=now();
+    // Execution starts at claim time; online workers may queue behind concurrency limits.
+    await this.run(
+      "UPDATE jobs SET status='uncertain',error=CASE WHEN COALESCE(timeoutAt,COALESCE(startedAt,createdAt)+?)<=? THEN '작업 실행 제한 시간을 초과했습니다.' ELSE '실행기 연결이 끊겨 완료 여부를 확인할 수 없습니다.' END WHERE channelId=? AND status='running' AND (COALESCE(timeoutAt,COALESCE(startedAt,createdAt)+?)<=? OR participantId IN (SELECT id FROM participants WHERE enabled=0 OR onlineAt<?))",
+      LEGACY_JOB_TIMEOUT_MS,time,channelId,LEGACY_JOB_TIMEOUT_MS,time,time-120000,
+    );
+    await this.run(
+      "UPDATE jobs SET status='skipped',error='참가자가 오프라인입니다.' WHERE channelId=? AND status='pending' AND (participantId IN (SELECT id FROM participants WHERE enabled=0) OR (createdAt<? AND participantId IN (SELECT id FROM participants WHERE onlineAt<?)))",
+      channelId,time-300000,time-120000,
+    );
+  }
   async poll(
     actor: Actor,
     args: Record<string, unknown>,
@@ -847,20 +860,14 @@ export class RoomService {
       );
     const goalCount=args.goalHistoryMessageCount===undefined?40:Number(args.goalHistoryMessageCount);
     if(!Number.isInteger(goalCount)||goalCount<0||goalCount>1000)throw new AppError(400,"invalid_history_count","목표 기록 개수는 0~1000입니다.");
+    const turnTimeout=args.turnTimeoutSeconds;
+    if(turnTimeout!==undefined && !validTurnTimeout(turnTimeout))
+      throw new AppError(400,"invalid_turn_timeout","작업 실행 제한 시간은 10~3600초 정수입니다.");
     // Uncertain calls are never re-queued automatically.
-    await this.run(
-      "UPDATE jobs SET status='uncertain',error='실행기 연결이 끊겨 완료 여부를 확인할 수 없습니다.' WHERE channelId=? AND status='running' AND participantId IN (SELECT id FROM participants WHERE onlineAt<?)",
-      channelId,
-      now() - 120000,
-    );
+    await this.expireJobs(channelId);
     await this.run(
       "UPDATE participants SET onlineAt=? WHERE channelId=? AND deviceId=? AND enabled=1",
       now(), channelId, actor.deviceId,
-    );
-    await this.run(
-      "UPDATE jobs SET status='skipped',error='참가자가 오프라인입니다.' WHERE channelId=? AND status='pending' AND (createdAt<? OR participantId IN (SELECT id FROM participants WHERE enabled=0))",
-      channelId,
-      now() - 300000,
     );
     const rounds = await this.all<Round>(
       "SELECT * FROM rounds WHERE channelId=? AND status='active'",
@@ -902,9 +909,11 @@ export class RoomService {
       Number(Array.isArray(args.capabilities)&&args.capabilities.includes("goals-v1")),
     );
     if (!candidate) return { jobs: [] };
+    const startedAt=now();
     const job = await this.one<Job>(
-      "UPDATE jobs SET status='running',startedAt=? WHERE id=? AND status='pending' RETURNING *",
-      now(),
+      "UPDATE jobs SET status='running',startedAt=?,timeoutAt=? WHERE id=? AND status='pending' RETURNING *",
+      startedAt,
+      startedAt+(turnTimeout===undefined?LEGACY_JOB_TIMEOUT_MS:turnTimeout*1000+JOB_DELIVERY_GRACE_MS),
       candidate.id,
     );
     if (!job) return { jobs: [] };
@@ -962,12 +971,14 @@ export class RoomService {
     return job;
   }
   async complete(actor: Actor, args: Record<string, unknown>) {
-    const job = await this.ownedJob(
+    let job = await this.ownedJob(
       actor,
       requiredString(args.jobId, "작업 ID", 250),
     );
     const jobRound=await this.one<Round>("SELECT * FROM rounds WHERE id=?",job.roundId);
     if(jobRound?.goalId)return this.goals.complete(actor,job,args);
+    await this.expireJobs(job.channelId);
+    job=(await this.one<Job>("SELECT * FROM jobs WHERE id=?",job.id))!;
     if (
       job.status === "completed" ||
       job.status === "skipped" ||

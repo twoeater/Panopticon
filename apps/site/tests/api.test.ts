@@ -73,7 +73,8 @@ test("invalid provider/transport/format/address combinations fail without exposi
 test("Responses sends the selected endpoint/key, preserves instructions and disables retries", async () => {
   const mock = mockSDK({ output_text: '{"text":"ok"}', usage: { total_tokens: 5 }, output: [] });
   const signal = new AbortController().signal;
-  const result = await apiTurn(profile({ baseURL: "https://gateway.example/prefix/v1/", maxOutputTokens: 512, webSearch: true }), "system", "question", signal, mock.load);
+  const result = await apiTurn(profile({ baseURL: "https://gateway.example/prefix/v1/", maxOutputTokens: 512, webSearch: true }), "system", "question", signal, mock.load, 600000);
+  assert.equal(mock.options.timeout,600000);
   assert.equal(mock.options.baseURL, "https://gateway.example/prefix/v1");
   assert.equal(mock.options.apiKey, "test-only-key");
   assert.equal(mock.options.maxRetries, 0);
@@ -87,6 +88,7 @@ test("EXAONE and compatible Chat Completions publish final content only, retaini
     const mock = mockSDK({ choices: [{ finish_reason: "stop", message: { content: '\n\n{"text":"answer"}', reasoning_content: "private reasoning", annotations: [] } }], usage: { total_tokens: 75, reasoning_tokens: 60 } });
     const result = await apiTurn(profile({ provider, baseURL: "https://chat.example/v1", apiFormat: "chat-completions", maxOutputTokens: 8192 }), "persona", "history", new AbortController().signal, mock.load);
     assert.equal(mock.packageName, "openai");
+    assert.equal(mock.options.timeout,180000);
     assert.equal(mock.calls[0].format, "chat-completions");
     assert.deepEqual(mock.calls[0].body.messages, [{ role: "system", content: "persona" }, { role: "user", content: "history" }]);
     assert.equal(mock.calls[0].body[provider === "openai" ? "max_completion_tokens" : "max_tokens"], 8192);
@@ -112,7 +114,8 @@ test("Chat Completions rejects truncated or reasoning-only responses without ret
 
 test("Anthropic Messages uses the overridden HTTP endpoint and existing search tools", async () => {
   const mock = mockSDK({ content: [{ type: "text", text: "answer" }, { type: "web_search_tool_result", content: [] }], usage: { input_tokens: 2 } });
-  const result = await apiTurn(profile({ provider: "anthropic", baseURL: "http://anthropic-gateway.example", webSearch: true, maxOutputTokens: 777 }), "persona", "question", new AbortController().signal, mock.load);
+  const result = await apiTurn(profile({ provider: "anthropic", baseURL: "http://anthropic-gateway.example", webSearch: true, maxOutputTokens: 777 }), "persona", "question", new AbortController().signal, mock.load,600000);
+  assert.equal(mock.options.timeout,600000);
   assert.equal(mock.packageName, "@anthropic-ai/sdk");
   assert.equal(mock.options.baseURL, "http://anthropic-gateway.example");
   assert.equal(mock.options.maxRetries, 0);

@@ -23,6 +23,7 @@ console.log(JSON.stringify({text:createHash('sha256').update(text).digest('hex')
     let promptFile = "";
     const result = await grokTurn(profile, instructions, input, cwd, new AbortController().signal, async (binary, args, options) => {
       assert.equal(binary, "grok");
+      assert.equal(options?.timeoutMs,600000);
       assert.ok(args.join(" ").length < 2000);
       assert.ok(!args.includes("-p"));
       promptFile = args[args.indexOf("--prompt-file") + 1];
@@ -34,7 +35,7 @@ console.log(JSON.stringify({text:createHash('sha256').update(text).digest('hex')
       assert.equal(args[args.indexOf("--deny") + 1], "mcp__*");
       assert.equal(args[args.indexOf("--model") + 1], "test-model");
       return runProcess(process.execPath, [fixture, ...args], options);
-    });
+    },600000);
     assert.equal(result.text, createHash("sha256").update(`${instructions}\n\n${input}`).digest("hex"));
     assert.deepEqual(result.usage, {input_tokens:1});
     await assert.rejects(access(promptFile));

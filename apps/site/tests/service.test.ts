@@ -260,6 +260,19 @@ test("pause cancels queued work and stale completion, expired work never requeue
     sqlite.close();
   }
 });
+test("ordinary jobs keep the configured deadline and reject late results",async()=>{
+  const {room,sqlite,channel,device}=await setup();
+  try {
+    await room.call(alice,"message_post",{channelId:channel.id,text:"timeout test",clientMessageId:"timeout"});
+    sqlite.prepare("UPDATE jobs SET createdAt=? WHERE channelId=?").run(Date.now()-600000,channel.id);
+    const t=(await room.poll(device,{channelId:channel.id,turnTimeoutSeconds:600})).jobs[0];
+    assert.ok(t);assert.equal(t.job.timeoutAt!-t.job.startedAt!,630000);
+    sqlite.prepare("UPDATE jobs SET timeoutAt=1 WHERE id=?").run(t.job.id);
+    await assert.rejects(room.complete(device,{jobId:t.job.id,text:"late answer"}),/종료/);
+    assert.equal(sqlite.prepare("SELECT count(*) n FROM messages WHERE id=?").get("answer:"+t.job.id)!.n,0);
+  }finally{sqlite.close();}
+});
+
 test("MCP uses the caller identity, device cannot administer, external posts dedupe", async () => {
   const { room, sqlite, channel, device } = await setup();
   try {

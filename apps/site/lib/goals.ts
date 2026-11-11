@@ -209,7 +209,7 @@ export class Goals {
       return;
     }
     if(!g.roundId)return;
-    await this.room.run("UPDATE jobs SET status=CASE WHEN status='running' THEN 'uncertain' ELSE 'skipped' END,error='목표 작업 응답 기한 초과' WHERE roundId=? AND status IN ('pending','running') AND createdAt<?",g.roundId,time-300000);
+    await this.room.expireJobs(channel.id);
     const jobs=await this.room.all<Job>("SELECT * FROM jobs WHERE roundId=?",g.roundId);
     if(!jobs.length)return;
     const current=await this.get(g.id);

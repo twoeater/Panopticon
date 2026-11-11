@@ -2,6 +2,7 @@ import { mkdtemp, writeFile, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import type { Profile } from "./config.ts";
 import { runProcess } from "./process.ts";
+import { DEFAULT_TURN_TIMEOUT_SECONDS } from "../lib/execution-limits.ts";
 
 export async function grokTurn(
   profile: Profile,
@@ -10,6 +11,7 @@ export async function grokTurn(
   cwd: string,
   signal: AbortSignal,
   run = runProcess,
+  timeoutMs = DEFAULT_TURN_TIMEOUT_SECONDS * 1000,
 ) {
   // Windows limits command lines to 32,767 characters. History and evidence
   // routinely exceed that; keep the complete prompt out of the argument list.
@@ -31,7 +33,7 @@ export async function grokTurn(
         "--sandbox", "strict",
         ...(profile.model ? ["--model", profile.model] : []),
       ],
-      { cwd, signal },
+      { cwd, signal, timeoutMs },
     );
     const response = JSON.parse(result.stdout);
     if (response.is_error || response.error) throw new Error("Grok 호출 실패");

@@ -330,6 +330,45 @@ test("invalid poll settings never claim a job; beginning a goal cancels queued h
   }finally{f.sqlite.close();}
 });
 
+test("online goal jobs can queue beyond five minutes and claimed jobs use the runner timeout",async()=>{
+  const f=await setup();
+  try {
+    const g=await f.start();
+    f.sqlite.prepare("UPDATE jobs SET createdAt=? WHERE channelId=?").run(Date.now()-600000,f.channel.id);
+    for(const turnTimeoutSeconds of [-1,0,9,3601,1.5,"600",null])
+      await assert.rejects(f.room.poll(f.device,{channelId:f.channel.id,capabilities:["goals-v1"],turnTimeoutSeconds}),/실행 제한/);
+    assert.equal(f.sqlite.prepare("SELECT count(*) n FROM jobs WHERE status='running'").get()!.n,0);
+    const t=(await f.room.poll(f.device,{channelId:f.channel.id,capabilities:["goals-v1"],turnTimeoutSeconds:600})).jobs[0];
+    assert.ok(t);assert.equal(t.job.timeoutAt!-t.job.startedAt!,630000);
+    f.sqlite.prepare("UPDATE jobs SET startedAt=? WHERE id=?").run(Date.now()-360000,t.job.id);
+    await f.room.poll(f.device,{channelId:f.channel.id,capabilities:["goals-v1"],claim:false,turnTimeoutSeconds:10});
+    assert.equal(f.sqlite.prepare("SELECT status,timeoutAt FROM jobs WHERE id=?").get(t.job.id)!.status,"running");
+    assert.equal(f.sqlite.prepare("SELECT timeoutAt FROM jobs WHERE id=?").get(t.job.id)!.timeoutAt,t.job.timeoutAt,"later settings cannot shorten a claimed job");
+    f.sqlite.prepare("UPDATE jobs SET timeoutAt=? WHERE id=?").run(Date.now()-1,t.job.id);
+    await assert.rejects(f.room.complete(f.device,{jobId:t.job.id,goalResult:result(t)}),/유효하지/);
+    const expired=f.sqlite.prepare("SELECT status,error FROM jobs WHERE id=?").get(t.job.id)!;
+    assert.equal(expired.status,"uncertain");assert.match(String(expired.error),/실행 제한/);
+    assert.equal((await f.room.goals.get(g.id)).deadline,g.deadline);
+    const next=(await f.poll()).jobs[0];assert.ok(next);assert.notEqual(next.job.id,t.job.id);
+    assert.equal(next.job.timeoutAt!-next.job.startedAt!,300000,"legacy runners retain the five-minute server execution limit");
+  }finally{f.sqlite.close();}
+});
+
+test("legacy goal execution expires from start, while disconnected queued jobs still expire",async()=>{
+  const f=await setup();
+  try {
+    await f.start();const t=(await f.poll()).jobs[0];
+    f.sqlite.prepare("UPDATE jobs SET timeoutAt=NULL,createdAt=?,startedAt=? WHERE id=?").run(Date.now()-900000,Date.now(),t.job.id);
+    await f.room.goals.tick(f.channel);assert.equal(f.sqlite.prepare("SELECT status FROM jobs WHERE id=?").get(t.job.id)!.status,"running");
+    f.sqlite.prepare("UPDATE jobs SET startedAt=? WHERE id=?").run(Date.now()-300001,t.job.id);
+    f.sqlite.prepare("UPDATE jobs SET createdAt=? WHERE status='pending'").run(Date.now()-600000);
+    f.sqlite.prepare("UPDATE participants SET onlineAt=?").run(Date.now()-121000);
+    await f.room.goals.tick(f.channel);
+    assert.equal(f.sqlite.prepare("SELECT status FROM jobs WHERE id=?").get(t.job.id)!.status,"uncertain");
+    assert.equal(f.sqlite.prepare("SELECT count(*) n FROM jobs WHERE status='skipped'").get()!.n,1);
+  }finally{f.sqlite.close();}
+});
+
 test("chat windows deduplicate and retain at most 300 records while preserving unchanged row objects",()=>{
   const messages=Array.from({length:400},(_,i)=>({id:"m"+i,seq:i,text:"message"})) as any;
   const initial=messages.slice(0,300),updated=mergeMessageWindow(initial,messages.slice(250));
@@ -341,7 +380,7 @@ test("chat windows deduplicate and retain at most 300 records while preserving u
 test("goal runner validates structured responses, retrieves pinned history and holds oversized context without a model call",async()=>{
   const f=await setup(),dir=await mkdtemp(path.join(os.tmpdir(),"panopticon-goals-")),ledger=new Ledger(":memory:"),files=new LocalFiles(dir);
   try {
-    await f.start();const t=await untilVote(f),config=parseConfig({dataDir:dir}),profile=config.profiles[0],signal=new AbortController().signal;
+    await f.start();const t=await untilVote(f),config=parseConfig({dataDir:dir,turn:{timeoutSeconds:600}}),profile=config.profiles[0],signal=new AbortController().signal;
     let calls=0;
     const model=async()=>{calls++;return {text:JSON.stringify({text:"그냥 동의합니다"}),usage:{},sources:[]};};
     const invalid=await executeTurn(config,profile,t,files,ledger,signal,model);
@@ -352,7 +391,8 @@ test("goal runner validates structured responses, retrieves pinned history and h
     assert.equal((await executeTurn(config,profile,t,files,ledger,signal,model)).blocked,true);assert.equal(calls,before);
     t.goal!.goal.instructions="오래된 목표 지시";t.goal!.goal.status="finalizing";
     let step=0,historyRead=0;
-    const good=await executeTurn(config,{...profile,webSearch:true},t,files,ledger,signal,async(p,instructions,input)=>{
+    const good=await executeTurn(config,{...profile,webSearch:true},t,files,ledger,signal,async(p,instructions,input,_dir,_signal,timeoutMs)=>{
+      assert.equal(timeoutMs,600000);
       assert.equal(p.webSearch,false);assert.match(instructions,/마감 전에/);
       assert.match(input,/오래된 목표 지시/);assert.match(input,/검증 필요/);
       if(step++===0)return {text:JSON.stringify({tool:{name:"goal_history_read",arguments:{goalId:"foreign",limit:3}}}),usage:{},sources:[]};

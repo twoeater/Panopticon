@@ -1,5 +1,6 @@
 import { resolveApiKey, resolveApiConnection, type Profile } from "./config.ts";
 import type { ModelResult } from "./adapters.ts";
+import { DEFAULT_TURN_TIMEOUT_SECONDS } from "../lib/execution-limits.ts";
 const packageImport = (name: string): Promise<any> => import(name);
 export async function apiTurn(
   profile: Profile,
@@ -7,13 +8,14 @@ export async function apiTurn(
   input: string,
   signal: AbortSignal,
   loadSDK: (name: string) => Promise<any> = packageImport,
+  timeoutMs = DEFAULT_TURN_TIMEOUT_SECONDS * 1000,
 ): Promise<ModelResult> {
   if (profile.provider === "gemini") throw new Error("Gemini는 비활성입니다.");
   const apiKey = resolveApiKey(profile);
   if (!apiKey || !profile.model)
     throw new Error("프로필의 apiKey(또는 API 키 환경변수)와 model을 설정해 주세요.");
   const connection = resolveApiConnection(profile);
-  const options = { apiKey, baseURL: connection.baseURL, maxRetries: 0, timeout: 180000 };
+  const options = { apiKey, baseURL: connection.baseURL, maxRetries: 0, timeout: timeoutMs };
   if (connection.apiFormat === "messages") {
     const { default: Anthropic } = await loadSDK(connection.sdk);
     const client = new Anthropic(options);

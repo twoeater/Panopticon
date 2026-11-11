@@ -5,6 +5,7 @@ import {
   uniqueIndex,
   index,
 } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 export const channels = sqliteTable("channels", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
@@ -60,6 +61,7 @@ export const participants = sqliteTable(
     provider: text("provider").notNull(),
     onlineAt: integer("onlineAt").notNull(),
     enabled: integer("enabled").notNull().default(1),
+    goalsSupported: integer("goalsSupported").notNull().default(0),
   },
   (t) => [
     uniqueIndex("participant_identity").on(
@@ -85,11 +87,13 @@ export const messages = sqliteTable(
     phase: text("phase").notNull(),
     evidence: text("evidence").notNull().default("[]"),
     mentions: text("mentions").notNull().default("[]"),
+    goalId: text("goalId"),
     createdAt: integer("createdAt").notNull(),
   },
   (t) => [
     uniqueIndex("message_id").on(t.id),
     index("channel_sequence").on(t.channelId, t.seq),
+    index("goal_sequence").on(t.goalId, t.seq),
   ],
 );
 export const rounds = sqliteTable(
@@ -104,6 +108,9 @@ export const rounds = sqliteTable(
     status: text("status").notNull(),
     roster: text("roster").notNull(),
     targetParticipantIds: text("targetParticipantIds").notNull().default("[]"),
+    goalId: text("goalId"),
+    goalRevision: integer("goalRevision").notNull().default(0),
+    contextThrough: integer("contextThrough").notNull().default(0),
     createdAt: integer("createdAt").notNull(),
   },
   (t) => [index("round_channel").on(t.channelId, t.status)],
@@ -120,6 +127,7 @@ export const jobs = sqliteTable(
     createdAt: integer("createdAt").notNull(),
     startedAt: integer("startedAt"),
     error: text("error"),
+    resultToken: text("resultToken"),
   },
   (t) => [
     uniqueIndex("job_once").on(t.roundId, t.participantId, t.phase),
@@ -131,3 +139,34 @@ export const rateBuckets = sqliteTable("rateBuckets", {
   count: integer("count").notNull(),
   expiresAt: integer("expiresAt").notNull(),
 });
+
+export const goals = sqliteTable("goals", {
+  id: text("id").primaryKey(), channelId: text("channelId").notNull(), creatorId: text("creatorId").notNull(),
+  title: text("title").notNull(), instructions: text("instructions").notNull(),
+  deadline: integer("deadline").notNull(), finalDeadline: integer("finalDeadline").notNull(),
+  intervalSeconds: integer("intervalSeconds").notNull().default(60),
+  status: text("status").notNull().default("active"), phase: text("phase").notNull().default("waiting"),
+  roster: text("roster").notNull(), revision: integer("revision").notNull().default(0),
+  mutationId: text("mutationId").notNull().default(""), cycle: integer("cycle").notNull().default(0),
+  roundId: text("roundId"), proposalId: text("proposalId"), summary: text("summary").notNull().default(""),
+  summaryThrough: integer("summaryThrough").notNull().default(0), issues: text("issues").notNull().default("[]"),
+  cutoffSeq: integer("cutoffSeq"), afterCompact: text("afterCompact").notNull().default("goal_discuss"),
+  nextRunAt: integer("nextRunAt").notNull(), lastError: text("lastError"), outcome: text("outcome"),
+  createdAt: integer("createdAt").notNull(), completedAt: integer("completedAt"),
+}, t=>[
+  uniqueIndex("one_live_goal").on(t.channelId).where(sql`${t.status} IN ('active','finalizing')`),
+  index("goal_channel_created").on(t.channelId,t.createdAt,t.id),
+]);
+export const goalProposals = sqliteTable("goalProposals", {
+  id:text("id").primaryKey(), goalId:text("goalId").notNull(), version:integer("version").notNull(),
+  text:text("text").notNull(), sourceSeq:integer("sourceSeq").notNull(), createdAt:integer("createdAt").notNull(),
+},t=>[index("proposal_goal").on(t.goalId,t.version)]);
+export const goalVotes = sqliteTable("goalVotes", {
+  id:text("id").primaryKey(), goalId:text("goalId").notNull(), proposalId:text("proposalId").notNull(),
+  participantId:text("participantId").notNull(), decision:text("decision").notNull(), reason:text("reason").notNull(),
+  conclusion:text("conclusion").notNull(), createdAt:integer("createdAt").notNull(),
+},t=>[uniqueIndex("goal_vote_once").on(t.proposalId,t.participantId),index("goal_opinions").on(t.goalId,t.participantId,t.createdAt)]);
+export const goalCheckpoints = sqliteTable("goalCheckpoints", {
+  id:text("id").primaryKey(), goalId:text("goalId").notNull(), throughSeq:integer("throughSeq").notNull(),
+  summary:text("summary").notNull(), issues:text("issues").notNull(), sources:text("sources").notNull(), createdAt:integer("createdAt").notNull(),
+},t=>[index("goal_checkpoint").on(t.goalId,t.throughSeq)]);

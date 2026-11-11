@@ -22,14 +22,17 @@ import {
 } from "./security.ts";
 import { isActiveProvider } from "./providers.ts";
 import { resolveMentions, readMentions } from "./mentions.ts";
+import { Goals } from "./goals.ts";
 
 const channelColumns =
   "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,heartbeatParticipants,nextHeartbeatAt,paused,createdAt";
 const profilePattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export class RoomService {
   db: Database;
+  goals: Goals;
   constructor(db: Database) {
     this.db = db;
+    this.goals = new Goals(this);
   }
   async all<T>(sql: string, ...args: unknown[]) {
     return (
@@ -110,6 +113,12 @@ export class RoomService {
     args: Record<string, unknown> = {},
   ): Promise<unknown> {
     switch (action) {
+      case "goal_start": return this.goals.start(actor,args);
+      case "goal_cancel": return this.goals.cancel(actor,args);
+      case "goal_retry": return this.goals.retry(actor,args);
+      case "goal_list": return this.goals.list(actor,args);
+      case "goal_read": return this.goals.read(actor,args);
+      case "goal_history": return this.goals.history(actor,args);
       case "bootstrap":
         return {
           user: { id: actor.id, name: actor.name },
@@ -307,11 +316,14 @@ export class RoomService {
               )
               .bind(channelId),
           ]);
+        await this.goals.tick(await this.member(actor,channelId));
         return this.member(actor, channelId);
       }
       case "snapshot": {
         const channelId = requiredString(args.channelId, "채널 ID", 100);
         const channel = await this.member(actor, channelId);
+        await this.goals.tick(channel);
+        const activeGoal=await this.goals.active(channelId);
         const before = Number(args.before || 0),
           since = Number(args.since || 0);
         if (
@@ -324,25 +336,26 @@ export class RoomService {
         const messages = before
           ? (
               await this.all<Message>(
-                "SELECT * FROM messages WHERE channelId=? AND seq<? ORDER BY seq DESC LIMIT 100",
+                "SELECT m.*,g.title goalTitle FROM messages m LEFT JOIN goals g ON g.id=m.goalId WHERE m.channelId=? AND m.seq<? ORDER BY m.seq DESC LIMIT 100",
                 channelId,
                 before,
               )
             ).reverse()
           : since
             ? await this.all<Message>(
-                "SELECT * FROM messages WHERE channelId=? AND seq>? ORDER BY seq LIMIT 100",
+                "SELECT m.*,g.title goalTitle FROM messages m LEFT JOIN goals g ON g.id=m.goalId WHERE m.channelId=? AND m.seq>? ORDER BY m.seq LIMIT 100",
                 channelId,
                 since,
               )
             : (
                 await this.all<Message>(
-                  "SELECT * FROM messages WHERE channelId=? ORDER BY seq DESC LIMIT 100",
+                  "SELECT m.*,g.title goalTitle FROM messages m LEFT JOIN goals g ON g.id=m.goalId WHERE m.channelId=? ORDER BY m.seq DESC LIMIT 100",
                   channelId,
                 )
               ).reverse();
         return {
           channel,
+          activeGoal:activeGoal?await this.goals.overview(activeGoal):null,
           messages,
           participants: await this.all<Participant>(
             "SELECT * FROM participants WHERE channelId=? AND enabled=1",
@@ -376,6 +389,7 @@ export class RoomService {
         if (previous) return previous;
         await rateLimit(this.db, `post:${actor.id}`, 30, 60000);
         const text = requiredString(args.text, "메시지", 16000);
+        if(args.goalId) return this.goals.post(actor,args,messageId,actor.name,"human");
         const mentions = await this.messageMentions(channelId, text, args.targetParticipantIds);
         const replyTo = typeof args.replyTo === "string" ? args.replyTo : null;
         if (
@@ -432,6 +446,7 @@ export class RoomService {
         const trigger = await this.one<Message>("SELECT * FROM messages WHERE id=? AND channelId=?", triggerId, channel.id);
         if (!trigger)
           throw new AppError(404, "not_found", "메시지를 찾을 수 없습니다.");
+        if(trigger.goalId) throw new AppError(409,"goal_message","목표 메시지는 목표 토의에서 검토해 주세요.");
         let targets = readMentions(trigger.mentions).map(m=>m.id);
         if (!targets.length && trigger.roundId) {
           const parent = await this.one<Round>("SELECT * FROM rounds WHERE id=? AND channelId=?",trigger.roundId,channel.id);
@@ -491,7 +506,8 @@ export class RoomService {
           actor,
           requiredString(args.jobId, "작업 ID", 200),
         );
-        return { status: job.status };
+        await this.goals.tick(await this.member(actor,job.channelId));
+        return { status: (await this.one<Job>("SELECT * FROM jobs WHERE id=?",job.id))!.status };
       }
       case "job_complete":
         return this.complete(actor, args);
@@ -507,6 +523,7 @@ export class RoomService {
           `mcp-msg:${actor.id}:${channel.id}:${requiredString(args.requestId, "요청 ID", 100)}`,
         );
         if (await this.one("SELECT id FROM messages WHERE id=?",messageId)) return {id:messageId};
+        if(args.goalId) return this.goals.post(actor,args,messageId,actor.name+" / "+name,"llm");
         const text = requiredString(args.text, "메시지", 16000);
         const mentions = await this.messageMentions(channel.id,text,args.targetParticipantIds);
         await this.run(
@@ -641,7 +658,7 @@ export class RoomService {
       statements.push(
         this.db
           .prepare(
-            "INSERT INTO participants (id,channelId,ownerId,deviceId,profileId,name,provider,onlineAt,enabled) VALUES (?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,provider=excluded.provider,onlineAt=excluded.onlineAt,enabled=1",
+            "INSERT INTO participants (id,channelId,ownerId,deviceId,profileId,name,provider,onlineAt,enabled,goalsSupported) VALUES (?,?,?,?,?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,provider=excluded.provider,onlineAt=excluded.onlineAt,enabled=1,goalsSupported=excluded.goalsSupported",
           )
           .bind(
             participantId,
@@ -652,6 +669,7 @@ export class RoomService {
             p.name,
             p.provider,
             now(),
+            Number(Array.isArray(args.capabilities)&&args.capabilities.includes("goals-v1")),
           ),
       );
     }
@@ -761,6 +779,7 @@ export class RoomService {
       roundId,
     );
     if (!round) return;
+    if(round.kind==="goal") return;
     const unfinished = await this.one(
       "SELECT id FROM jobs WHERE roundId=? AND phase=? AND status IN ('pending','running') LIMIT 1",
       round.id,
@@ -825,6 +844,8 @@ export class RoomService {
         "invalid_history_count",
         "기록 개수는 0~1000입니다.",
       );
+    const goalCount=args.goalHistoryMessageCount===undefined?40:Number(args.goalHistoryMessageCount);
+    if(!Number.isInteger(goalCount)||goalCount<0||goalCount>1000)throw new AppError(400,"invalid_history_count","목표 기록 개수는 0~1000입니다.");
     // Uncertain calls are never re-queued automatically.
     await this.run(
       "UPDATE jobs SET status='uncertain',error='실행기 연결이 끊겨 완료 여부를 확인할 수 없습니다.' WHERE channelId=? AND status='running' AND participantId IN (SELECT id FROM participants WHERE onlineAt<?)",
@@ -845,9 +866,12 @@ export class RoomService {
       channelId,
     );
     for (const round of rounds) await this.advance(round.id);
+    await this.goals.tick(channel);
+    const activeGoal=await this.goals.active(channelId);
     if (
       !channel.paused &&
       channel.heartbeatEnabled &&
+      !activeGoal &&
       channel.nextHeartbeatAt <= now() &&
       !(await this.one(
         "SELECT id FROM rounds WHERE channelId=? AND status='active' LIMIT 1",
@@ -871,9 +895,10 @@ export class RoomService {
     }
     if (channel.paused || args.claim === false) return { jobs: [] };
     const candidate = await this.one<Job>(
-      "SELECT j.* FROM jobs j JOIN participants p ON p.id=j.participantId WHERE j.channelId=? AND j.status='pending' AND p.deviceId=? AND p.enabled=1 AND NOT EXISTS (SELECT 1 FROM jobs x WHERE x.participantId=p.id AND x.status='running') ORDER BY CASE WHEN j.phase='heartbeat' THEN 1 ELSE 0 END,j.createdAt,j.id LIMIT 1",
+      "SELECT j.* FROM jobs j JOIN participants p ON p.id=j.participantId JOIN rounds r ON r.id=j.roundId WHERE j.channelId=? AND j.status='pending' AND p.deviceId=? AND p.enabled=1 AND (r.goalId IS NULL OR (?=1 AND p.goalsSupported=1)) AND NOT EXISTS (SELECT 1 FROM jobs x WHERE x.participantId=p.id AND x.status='running') ORDER BY CASE WHEN j.phase='heartbeat' THEN 1 ELSE 0 END,j.createdAt,j.id LIMIT 1",
       channelId,
       actor.deviceId,
+      Number(Array.isArray(args.capabilities)&&args.capabilities.includes("goals-v1")),
     );
     if (!candidate) return { jobs: [] };
     const job = await this.one<Job>(
@@ -897,9 +922,13 @@ export class RoomService {
           channelId,
         )
       : null;
+    if(round.goalId) {
+      const context=await this.goals.context(round,goalCount);
+      return {jobs:[{job,round,channel,participant,trigger:null,phaseMessages:[],...context}]};
+    }
     const history = (
       await this.all<Message>(
-        "SELECT * FROM messages WHERE channelId=? AND seq<? ORDER BY seq DESC LIMIT ?",
+        "SELECT * FROM messages WHERE channelId=? AND goalId IS NULL AND seq<? ORDER BY seq DESC LIMIT ?",
         channelId,
         trigger?.seq ?? Number.MAX_SAFE_INTEGER,
         count,
@@ -936,6 +965,8 @@ export class RoomService {
       actor,
       requiredString(args.jobId, "작업 ID", 250),
     );
+    const jobRound=await this.one<Round>("SELECT * FROM rounds WHERE id=?",job.roundId);
+    if(jobRound?.goalId)return this.goals.complete(actor,job,args);
     if (
       job.status === "completed" ||
       job.status === "skipped" ||

@@ -16,6 +16,7 @@ export class Ledger {
     automatic: boolean,
     limits: Config["limits"],
     time = Date.now(),
+    logicalRequestId?: string,
   ): { allowed: boolean; reason?: string } {
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -50,8 +51,8 @@ export class Ledger {
         return { allowed: false, reason: "요청 내부 턴 한도" };
       }
       if (
-        !automatic &&
-        !this.db.prepare("SELECT id FROM requests WHERE id=?").get(requestId)
+        (!automatic || logicalRequestId) &&
+        !this.db.prepare("SELECT id FROM requests WHERE id=?").get(logicalRequestId || requestId)
       ) {
         const since = time - limits.windowMinutes * 60000,
           limit =
@@ -76,7 +77,7 @@ export class Ledger {
         }
         this.db
           .prepare("INSERT INTO requests VALUES (?,?,?)")
-          .run(requestId, sender, time);
+          .run(logicalRequestId || requestId, sender, time);
       }
       this.db
         .prepare("INSERT INTO turns VALUES (?,?,?,?,'running',NULL)")

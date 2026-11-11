@@ -18,8 +18,12 @@ import {
 } from "lucide-react";
 import type { Channel, Participant, Message, Job, Round } from "../lib/domain";
 import { MessageMarkdown } from "./message-markdown";
+import { GoalCenter, goalPhaseLabels } from "./goal-center";
+import { mergeMessageWindow } from "../lib/message-window";
+import type { GoalSummary } from "../lib/domain";
 import { mentionQuery, readMentions, resolveMentions, updateMentionSelections, type MentionSelection } from "../lib/mentions";
 type Snapshot = {
+  activeGoal: GoalSummary | null;
   channel: Channel;
   messages: Message[];
   participants: Participant[];
@@ -29,6 +33,7 @@ type Snapshot = {
   serverTime: number;
 };
 const phases: Record<string, string> = {
+  ...goalPhaseLabels,
   chat: "독립 답변",
   review: "상호 검토",
   revise: "수정·재반박",
@@ -72,6 +77,9 @@ export default function ChatRoom({
     [selected, setSelected] = useState(""),
     [data, setData] = useState<Snapshot | null>(null);
   const [draft, setDraft] = useState(""),
+    [goalView,setGoalView]=useState<string|null>(null),
+    [goalTarget,setGoalTarget]=useState(""),
+    [readingHistory,setReadingHistory]=useState(false),
     [caret, setCaret] = useState(0),
     [preferredTargets, setPreferredTargets] = useState<MentionSelection[]>([]),
     [mentionIndex, setMentionIndex] = useState(0),
@@ -98,6 +106,7 @@ export default function ChatRoom({
     [heartbeatAll, setHeartbeatAll] = useState(false),
     [copied, setCopied] = useState("");
   const composer = useRef<HTMLTextAreaElement>(null),
+    readingHistoryRef=useRef(false),
     list = useRef<HTMLDivElement>(null),
     end = useRef<HTMLDivElement>(null),
     selectedRef = useRef(selected),
@@ -125,9 +134,9 @@ export default function ChatRoom({
         list.current.scrollTop -
         list.current.clientHeight <
         160;
-    setData(old => old && old.channel.id === r.channel.id ? {...r, messages: [...new Map([...old.messages, ...r.messages].map(m => [m.id, m])).values()].sort((a,b) => a.seq-b.seq)} : r);
+    setData(old => old && old.channel.id === r.channel.id ? {...r, messages: readingHistoryRef.current ? old.messages : mergeMessageWindow(old.messages,r.messages)} : r);
     setConnected(true);
-    if (bottom)
+    if (bottom && !readingHistoryRef.current)
       setTimeout(
         () => end.current?.scrollIntoView({ block: "end", behavior: "smooth" }),
         20,
@@ -141,6 +150,7 @@ export default function ChatRoom({
     setOldestReached(false);
     setShowDetails(false);
     setReply(null);
+    readingHistoryRef.current=false;setReadingHistory(false);setGoalTarget("");setGoalView(null);
     setPreferredTargets([]);
     setMentionDismissed(true);
     refresh().catch((e) => setError(e.message));
@@ -163,12 +173,14 @@ export default function ChatRoom({
   };
   const loadOlder = () => act(async () => {
     if (!data?.messages.length) return;
-    const current = selected, height = list.current?.scrollHeight || 0;
+    const current = selected;
     const r: Snapshot = await api('snapshot', {channelId: current, before: data.messages[0].seq});
     if (selectedRef.current !== current) return;
     setOldestReached(r.messages.length < 100);
-    setData(old => old ? {...old, messages: [...new Map([...r.messages, ...old.messages].map(m => [m.id,m])).values()].sort((a,b)=>a.seq-b.seq)} : old);
-    requestAnimationFrame(() => { if(list.current) list.current.scrollTop += list.current.scrollHeight-height; });
+    if(!r.messages.length)return;
+    readingHistoryRef.current=true;setReadingHistory(true);
+    setData(old => old ? {...old, messages:r.messages} : old);
+    requestAnimationFrame(() => { if(list.current) list.current.scrollTop=0; });
   });
   const copy = async (value: string, label: string) => {
     try {
@@ -200,7 +212,7 @@ export default function ChatRoom({
       if (addressed.error) throw new Error(addressed.error);
       const text = draft.trim();
       const targets = addressed.mentions.map(m=>m.id);
-      const optionsKey = JSON.stringify({targets,verify,replyTo:reply?.id});
+      const optionsKey = JSON.stringify({targets,verify,replyTo:reply?.id,goalTarget});
       const nonce =
         pending.current?.text === text && pending.current.channel === selected && pending.current.optionsKey === optionsKey
           ? pending.current.id
@@ -211,7 +223,8 @@ export default function ChatRoom({
         text,
         clientMessageId: nonce,
         replyTo: reply?.id,
-        verify,
+        verify:!goalTarget&&verify,
+        goalId:goalTarget||undefined,
         targetParticipantIds: targets,
       });
       pending.current = null;
@@ -229,8 +242,8 @@ export default function ChatRoom({
       [],
     active = data?.rounds.find((r) => r.status === "active");
   const candidates = data?.participants.filter(p=>p.deviceId!=="mcp") || [];
-  const addressed = resolveMentions(draft,candidates,preferredTargets.map(target=>target.id));
-  const query = mentionDismissed ? null : mentionQuery(draft,caret);
+  const addressed = goalTarget?{mentions:[],error:undefined}:resolveMentions(draft,candidates,preferredTargets.map(target=>target.id));
+  const query = mentionDismissed || goalTarget ? null : mentionQuery(draft,caret);
   const suggestions = query ? candidates.filter(p=>p.name.toLowerCase().startsWith(query.query)).slice(0,8) : [];
   const selectedSuggestion = Math.min(mentionIndex,Math.max(suggestions.length-1,0));
   const ownerLabel = (p: Participant) => p.ownerId===user.id ? "나" : data?.members.find(m=>m.userId===p.ownerId)?.name || "다른 사용자";
@@ -337,6 +350,7 @@ export default function ChatRoom({
               </p>
             </div>
           </div>
+          {selected&&channel&&<GoalCenter channelId={selected} ownerId={channel.ownerId} userId={user.id} participants={(data?.participants||[]).map(p=>({...p,ownerName:data?.members.find(m=>m.userId===p.ownerId)?.name}))} active={data?.activeGoal||null} serverTime={data?.serverTime||Date.now()} view={goalView} setView={setGoalView} api={api} onChange={refresh}/>}
           <div className="header-actions">
             {selected && <button className="icon details-toggle" aria-label="참가자와 상황" aria-expanded={showDetails} onClick={() => setShowDetails(!showDetails)}><Radio size={17}/></button>}
             {selected && (
@@ -402,6 +416,7 @@ export default function ChatRoom({
         ) : (
           <>
             <div className="message-list" ref={list}>
+              {readingHistory&&<button className="secondary history-button" onClick={()=>void act(async()=>{readingHistoryRef.current=false;setReadingHistory(false);setData(null);setOldestReached(false);await refresh();})}>최신 대화로 돌아가기</button>}
               {!oldestReached && (data?.messages.length || 0) >= 100 && <button className="secondary history-button" disabled={busy} onClick={loadOlder}>이전 대화 불러오기</button>}
               <div className="room-intro">
                 <i />
@@ -469,6 +484,7 @@ export default function ChatRoom({
                       <div className="message-text">
                         <MessageMarkdown text={m.text} messageId={m.id} />
                       </div>
+                      {m.goalId&&<button className="goal-message-badge" onClick={()=>setGoalView(m.goalId!)}>{goalPhaseLabels[m.phase]||"목표토의"} · {m.goalTitle||"목표 보기"}</button>}
                       {readMentions(m.mentions).length > 0 && (
                         <div className="message-targets" aria-label="호출 대상">
                           호출: {readMentions(m.mentions).map(target=>{
@@ -486,9 +502,9 @@ export default function ChatRoom({
                         </details>
                       )}
                       <div className="message-actions">
-                        <button onClick={() => setReply(m)}>답장</button>
+                        <button disabled={Boolean(m.goalId&&m.goalId!==data.activeGoal?.id)} onClick={() => {setReply(m);setGoalTarget(m.goalId||"");}}>답장</button>
                         <button
-                          disabled={busy || Boolean(channel?.paused)}
+                          disabled={busy || Boolean(channel?.paused) || Boolean(m.goalId)}
                           onClick={() =>
                             act(async () => {
                               await api("verification_start", {
@@ -545,6 +561,12 @@ export default function ChatRoom({
                     </button>
                   </div>
                 )}
+                <label className="composer-scope">대화 구분<select aria-label="대화 구분" value={goalTarget} onChange={e=>{setGoalTarget(e.target.value);setReply(null);setVerify(false);setMentionDismissed(true);}}>
+                  <option value="">일반 대화</option>
+                  {data?.activeGoal?.status==="active"&&<option value={data.activeGoal.id}>현재 목표 · {data.activeGoal.title}</option>}
+                  {goalTarget&&goalTarget!==data?.activeGoal?.id&&<option value={goalTarget}>종료된 목표 · 일반 대화로 전환해 주세요</option>}
+                  {goalTarget&&goalTarget===data?.activeGoal?.id&&data.activeGoal.status!=="active"&&<option value={goalTarget}>마감된 목표 · 최종 정리 중</option>}
+                </select>{goalTarget&&<small>보충 의견은 목표 평가를 새로 시작합니다. @호출로 참가 명단을 바꾸지 않습니다.</small>}</label>
                 <textarea
                   ref={composer}
                   aria-label="채팅 메시지"
@@ -598,11 +620,12 @@ export default function ChatRoom({
                   </div>
                 )}
                 <div className="composer-tools">
-                  <button type="button" className="mention-toggle" aria-label="AI 호출 대상 선택" onClick={beginMention}>@</button>
+                  <button type="button" className="mention-toggle" aria-label="AI 호출 대상 선택" disabled={Boolean(goalTarget)} onClick={beginMention}>@</button>
                   <button
                     type="button"
                     className={`verify-toggle ${verify ? "on" : ""}`}
                     onClick={() => setVerify(!verify)}
+                    disabled={Boolean(goalTarget)}
                     aria-pressed={verify}
                   >
                     <ShieldCheck size={14} /> 검증 모드
@@ -612,7 +635,7 @@ export default function ChatRoom({
                     type="submit"
                     className="send"
                     aria-label="메시지 보내기"
-                    disabled={busy || !draft.trim() || Boolean(addressed.error)}
+                    disabled={busy || !draft.trim() || Boolean(addressed.error) || Boolean(goalTarget&&(goalTarget!==data?.activeGoal?.id||data.activeGoal.status!=="active"))}
                   >
                     <ArrowUp size={19} />
                   </button>

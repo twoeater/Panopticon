@@ -3,7 +3,9 @@
   "dataDir": ".panopticon",
   "channels": [],
   "turn": {
-    "historyMessageCount": 40
+    "historyMessageCount": 40,
+    "goalHistoryMessageCount": 40,
+    "goalContextMaxChars": 64000
   },
   "profiles": [
     {

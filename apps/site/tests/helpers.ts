@@ -13,6 +13,7 @@ export function testDatabase() {
     first: async () => sqlite.prepare(sql).get(...values) || null,
     all: async () => ({ results: sqlite.prepare(sql).all(...values) }),
     run: async () => ({ meta: sqlite.prepare(sql).run(...values) }),
+    execute: () => ({ meta: sqlite.prepare(sql).run(...values) }),
   });
   const db: Database = {
     prepare: (sql) => statement(sql),
@@ -20,7 +21,7 @@ export function testDatabase() {
       sqlite.exec("BEGIN");
       try {
         const out = [];
-        for (const s of statements) out.push(await s.run());
+        for (const s of statements) out.push((s as any).execute());
         sqlite.exec("COMMIT");
         return out;
       } catch (e) {

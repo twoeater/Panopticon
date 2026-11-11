@@ -20,7 +20,7 @@ export interface Config {
   serverUrl: string;
   dataDir: string;
   channels: string[];
-  turn: { historyMessageCount: number };
+  turn: { historyMessageCount: number; goalHistoryMessageCount: number; goalContextMaxChars: number };
   profiles: Profile[];
   limits: {
     windowMinutes: number;
@@ -43,7 +43,7 @@ export const defaults: Config = {
   serverUrl: "https://panopticon.example",
   dataDir: ".panopticon",
   channels: [],
-  turn: { historyMessageCount: 40 },
+  turn: { historyMessageCount: 40, goalHistoryMessageCount: 40, goalContextMaxChars: 64000 },
   profiles: [
     {
       id: "gpt",
@@ -144,8 +144,10 @@ export function parseConfig(raw: any, base = process.cwd()): Config {
   value.serverUrl = url.origin;
   value.dataDir = path.resolve(base, value.dataDir);
   int(value.turn.historyMessageCount, 0, 1000, "turn.historyMessageCount");
-  if (Object.keys(value.turn).some((k) => k !== "historyMessageCount"))
-    throw new Error("turn 설정은 historyMessageCount만 지원합니다.");
+  int(value.turn.goalHistoryMessageCount, 0, 1000, "turn.goalHistoryMessageCount");
+  int(value.turn.goalContextMaxChars, 8000, 1000000, "turn.goalContextMaxChars");
+  if (Object.keys(value.turn).some((k) => !["historyMessageCount","goalHistoryMessageCount","goalContextMaxChars"].includes(k)))
+    throw new Error("지원하지 않는 turn 설정입니다.");
   if (
     !Array.isArray(value.channels) ||
     value.channels.some((c) => typeof c !== "string" || c.length > 100)

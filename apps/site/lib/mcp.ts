@@ -55,11 +55,17 @@ export const roomTools = [
         text: string,
         requestId: string,
         targetParticipantIds: {type:"array",items:string,maxItems:1000},
+        goalId: {type:"string",description:"진행 중 목표에 보충 의견을 보낼 때 지정합니다. 합의 투표로 계산되지 않습니다."},
       },
       required: ["channelId", "name", "text", "requestId"],
       additionalProperties: false,
     },
   },
+  ...[
+    {name:"goal_list",description:"채널의 목표 목록과 상태를 조회합니다.",properties:{offset:{type:"integer",minimum:0}},required:[]},
+    {name:"goal_read",description:"목표 지시, 참가자, 공동 초안, 동의표와 개인 결론을 조회합니다.",properties:{goalId:string,proposalId:string,proposalOffset:{type:"integer",minimum:0}},required:["goalId"]},
+    {name:"goal_history",description:"해당 목표의 원문을 최대 100개씩 조회합니다. nextBefore로 과거 기록을 계속 읽습니다.",properties:{goalId:string,before:{type:"integer",minimum:1},after:{type:"integer",minimum:0},limit:{type:"integer",minimum:1,maximum:100}},required:["goalId"]},
+  ].map(tool=>({name:tool.name,description:tool.description,inputSchema:{type:"object",properties:{channelId:string,...tool.properties},required:["channelId",...tool.required],additionalProperties:false}})),
   {
     name: "verification_start",
     description:
@@ -105,6 +111,9 @@ export async function handleMcp(
       room_read: "snapshot",
       room_post: "agent_post",
       verification_start: "verification_start",
+      goal_list: "goal_list",
+      goal_read: "goal_read",
+      goal_history: "goal_history",
     };
     try {
       const action = actions[String(params.name)];

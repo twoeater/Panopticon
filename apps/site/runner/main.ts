@@ -10,6 +10,7 @@ import { Ledger } from "./ledger.ts";
 import { probe } from "./adapters.ts";
 import { call, loadAuth, RequestError } from "./client.ts";
 import { executeTurn } from "./engine.ts";
+import { turnBudgetId } from "../lib/goal-protocol.ts";
 import { runProcess } from "./process.ts";
 import { setupSandbox } from "./setup-sandbox.ts";
 import { isActiveProvider, providers } from "../lib/providers.ts";
@@ -192,6 +193,7 @@ async function main() {
     for (const channelId of config.channels)
       await call(config, auth, "register", {
         channelId,
+        capabilities: ["goals-v1"],
         profiles: ready.map((p) => ({
           id: p.id,
           name: p.name,
@@ -220,6 +222,9 @@ async function main() {
           } catch (e) {
             if (e instanceof RequestError && [403, 409].includes(e.status))
               ledger.acknowledged(item.id);
+            else if (e instanceof RequestError && e.status === 400 && JSON.parse(item.payload!).goalResult) {
+              ledger.finish(item.id, {jobId:item.id,blocked:true,error:"목표 결과 서버 검증 실패: "+e.message});
+            }
             else throw e;
           }
         }
@@ -237,6 +242,8 @@ async function main() {
           const response = await call(config, auth, "poll", {
             channelId,
             historyMessageCount: config.turn.historyMessageCount,
+            goalHistoryMessageCount: config.turn.goalHistoryMessageCount,
+            capabilities: ["goals-v1"],
             claim: running.size < config.limits.concurrency,
           });
           for (const turn of response.jobs) {
@@ -245,14 +252,16 @@ async function main() {
               ),
               reserved = ledger.reserve(
                 turn.job.id,
-                turn.round.id,
+                turnBudgetId(turn),
                 turn.round.requestorId,
                 auth.ownerId,
-                turn.round.kind === "heartbeat",
+                turn.round.kind === "heartbeat" || turn.round.kind === "goal",
                 config.limits,
+                Date.now(),
+                turn.round.goalId || undefined,
               );
             if (!reserved.allowed || !profile) {
-              const payload = {jobId: turn.job.id, skipped: true};
+              const payload = {jobId: turn.job.id, skipped: true, ...(turn.goal?{blocked:true,error:reserved.reason||"참가자 설정이 없습니다."}:{})};
               if (reserved.allowed) ledger.finish(turn.job.id, payload);
               else ledger.skip(turn.job.id, payload);
               continue;
@@ -265,6 +274,8 @@ async function main() {
               files,
               ledger,
               controller.signal,
+              undefined,
+              async (args) => call(config,auth,"goal_history",{...args,channelId:turn.channel.id,goalId:turn.round.goalId}),
             )
               .then((result) => {
                 ledger.finish(turn.job.id, result);

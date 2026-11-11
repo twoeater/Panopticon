@@ -40,7 +40,7 @@ export async function GET(request: Request) {
       actor = await actorFor(request, room),
       url = new URL(request.url),
       action = url.searchParams.get("action") || "bootstrap";
-    if (!["bootstrap", "snapshot", "job_state"].includes(action))
+    if (!["bootstrap", "snapshot", "job_state", "goal_list", "goal_read", "goal_history"].includes(action))
       throw new AppError(
         405,
         "read_only",

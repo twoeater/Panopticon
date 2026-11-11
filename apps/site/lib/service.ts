@@ -620,7 +620,7 @@ export class RoomService {
     if (!actor.deviceId)
       throw new AppError(403, "device_required", "실행기 연결이 필요합니다.");
     const channelId = requiredString(args.channelId, "채널 ID", 100);
-    await this.member(actor, channelId);
+    const channel=await this.member(actor, channelId);
     if (!Array.isArray(args.profiles) || args.profiles.length > 12)
       throw new AppError(
         400,
@@ -674,6 +674,7 @@ export class RoomService {
       );
     }
     await this.db.batch(statements);
+    await this.goals.tick(channel);
     return this.all<Participant>(
       "SELECT * FROM participants WHERE channelId=? AND deviceId=? AND enabled=1",
       channelId,

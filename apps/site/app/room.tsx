@@ -566,7 +566,7 @@ export default function ChatRoom({
                   {data?.activeGoal?.status==="active"&&<option value={data.activeGoal.id}>현재 목표 · {data.activeGoal.title}</option>}
                   {goalTarget&&goalTarget!==data?.activeGoal?.id&&<option value={goalTarget}>종료된 목표 · 일반 대화로 전환해 주세요</option>}
                   {goalTarget&&goalTarget===data?.activeGoal?.id&&data.activeGoal.status!=="active"&&<option value={goalTarget}>마감된 목표 · 최종 정리 중</option>}
-                </select>{goalTarget&&<small>보충 의견은 목표 평가를 새로 시작합니다. @호출로 참가 명단을 바꾸지 않습니다.</small>}</label>
+                </select>{goalTarget&&<small>채널 공통 과제에 의견을 보냅니다. 보충 의견은 평가를 다시 시작하며 @호출로 대상을 제한하지 않습니다.</small>}</label>
                 <textarea
                   ref={composer}
                   aria-label="채팅 메시지"

@@ -29,6 +29,23 @@ export class Goals {
     if(actor.id!==g.creatorId && actor.id!==channel.ownerId)
       throw new AppError(403,"goal_owner_required","목표 생성자와 방장만 관리할 수 있습니다.");
   }
+  async eligible(channelId: string): Promise<GoalMember[]> {
+    const candidates=await this.room.all<Participant & {ownerName:string}>("SELECT p.*,m.name ownerName FROM participants p JOIN devices d ON d.id=p.deviceId JOIN members m ON m.channelId=p.channelId AND m.userId=p.ownerId WHERE p.channelId=? AND p.enabled=1 AND p.goalsSupported=1 AND p.onlineAt>? AND d.revoked=0 AND m.banned=0 ORDER BY p.rowid",channelId,now()-30000);
+    return candidates.map(p=>({id:p.id,name:p.name,ownerId:p.ownerId,ownerName:p.ownerName,deviceId:p.deviceId,provider:p.provider}));
+  }
+  async admit(g: Goal,time: number) {
+    // Membership only grows during discussion. Disconnecting cannot turn dissent into consensus.
+    if(g.status!=="active" || time>=g.deadline)return g;
+    const members=roster(g);
+    const added=(await this.eligible(g.channelId)).filter(p=>!members.some(m=>m.id===p.id));
+    if(!added.length || now()>=g.deadline)return g;
+    return this.change(g,{
+      roster:JSON.stringify([...members,...added]),
+      phase:g.phase==="held"?"held":"waiting",roundId:null,proposalId:null,
+      nextRunAt:members.length?Math.max(g.nextRunAt,time+g.intervalSeconds*1000):time,
+      lastError:g.phase==="held"?g.lastError:"새 AI "+added.length+"명이 공통 과제에 합류했습니다. 새 참가자와 함께 다음 회차를 진행합니다.",
+    });
+  }
   // All transition side effects are conditional on the winning compare-and-swap token.
   async change(g: Goal,patch: Partial<Goal>,extra: (guard: string,token: string)=>DbStatement[]=()=>[]) {
     const token=id(), entries=Object.entries(patch);
@@ -53,12 +70,8 @@ export class Goals {
     const title=requiredString(args.title,"목표 제목",120), instructions=requiredString(args.instructions,"목표 지시",16000);
     const deadline=integer(args.deadline,now()+1000,8640000000000000-600000,"마감");
     const interval=integer(args.intervalSeconds??60,10,86400,"토의 간격");
-    if(!Array.isArray(args.participantIds) || !args.participantIds.length || args.participantIds.length>1000 || args.participantIds.some(x=>typeof x!=="string"))
-      throw new AppError(400,"invalid_goal","참가 AI를 선택해 주세요.");
-    const candidates=await this.room.all<Participant & {ownerName:string}>("SELECT p.*,m.name ownerName FROM participants p JOIN devices d ON d.id=p.deviceId JOIN members m ON m.channelId=p.channelId AND m.userId=p.ownerId WHERE p.channelId=? AND p.enabled=1 AND p.goalsSupported=1 AND p.onlineAt>? AND d.revoked=0 AND m.banned=0",channel.id,now()-30000);
-    const selected=[...new Set(args.participantIds as string[])].map(pid=>candidates.find(p=>p.id===pid));
-    if(selected.some(p=>!p)) throw new AppError(400,"invalid_goal","목표 기능을 지원하는 온라인 AI만 선택할 수 있습니다.");
-    const members=selected.map(p=>({id:p!.id,name:p!.name,ownerId:p!.ownerId,ownerName:p!.ownerName,deviceId:p!.deviceId,provider:p!.provider}));
+    // Goals belong to the whole channel. Legacy participantIds cannot narrow the audience.
+    const members=await this.eligible(channel.id);
     await rateLimit(this.room.db,"goal-start:"+actor.id,10,60000);
     const time=now();
     try {
@@ -182,11 +195,14 @@ export class Goals {
       const cutoff=await this.room.one<{seq:number}>("SELECT COALESCE(MAX(seq),0) seq FROM messages WHERE goalId=? AND createdAt<?",g.id,g.deadline);
       g=await this.change(g,{status:"finalizing",phase:"waiting",cutoffSeq:cutoff!.seq,roundId:null,proposalId:null,nextRunAt:time,lastError:null});
     }
+    g=await this.admit(g,time);
+    if(!live(g))return;
     if(channel.paused) {
       if(g.roundId)await this.change(g,{phase:"waiting",roundId:null,proposalId:null,nextRunAt:time,lastError:"채널 일시정지"});
       return;
     }
     if(g.phase==="held")return;
+    if(!roster(g).length)return;
     if(g.phase==="waiting") {
       if(time>=g.nextRunAt)await this.next(g,g.status==="finalizing"?"goal_propose":"goal_discuss",g.cycle+1);
       return;
@@ -206,7 +222,7 @@ export class Goals {
     if(g.phase==="goal_discuss") { await this.next(g,"goal_propose");return; }
     if(g.phase==="goal_propose") { await this.next(g,"goal_vote");return; }
     const votes=await this.room.all<GoalVote>("SELECT * FROM goalVotes WHERE proposalId=?",g.proposalId);
-    const agreed=roster(g).every(p=>votes.some(v=>v.participantId===p.id&&v.decision==="agree"&&v.conclusion.trim()));
+    const agreed=roster(g).length>0&&roster(g).every(p=>votes.some(v=>v.participantId===p.id&&v.decision==="agree"&&v.conclusion.trim()));
     if(agreed || g.status==="finalizing") await this.change(g,{status:"completed",outcome:agreed?"unanimous":"unresolved",completedAt:time,roundId:null});
     else await this.change(g,{phase:"waiting",roundId:null,nextRunAt:time+g.intervalSeconds*1000});
   }

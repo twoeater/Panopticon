@@ -57,7 +57,7 @@ export async function buildContext(
       goal_propose:'{"text":"평가할 공동 결과 초안"}',
       goal_vote:'{"proposalId":"현재 proposal.id","decision":"agree 또는 disagree 또는 abstain","reason":"판단 사유","conclusion":"자신의 개인 결론"}',
     };
-    goalInstructions="\n목표 작업입니다. 일반 대화나 다른 목표의 내용을 섞지 마세요. 최종 응답 형식은 다음 목표 전용 JSON을 사용하세요: "+formats[turn.job.phase]+
+    goalInstructions="\n이 채널 전체의 공통 과제입니다. 다른 사용자의 AI도 함께 참여합니다. 일반 대화나 다른 목표의 내용을 섞지 마세요. 최종 응답 형식은 다음 목표 전용 JSON을 사용하세요: "+formats[turn.job.phase]+
       "\n과거 목표 원문은 goal_history_read 도구로 조회할 수 있습니다. 인수: {before?:seq,after?:seq,limit?:1~100}. nextBefore로 이전 페이지를 읽으세요. 현재 목표만 조회됩니다."+
       (goal.status==="finalizing"?"\n토의 마감 후 최종 정리 단계입니다. 새 조사나 새 토의를 시작하지 말고 마감 전에 수집된 근거로만 정리·평가하세요.":"");
   }

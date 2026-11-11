@@ -15,11 +15,13 @@
 .goal-form label { display:block; margin:14px 0; font-size:12px; }
 .goal-form input:not([type=checkbox]),.goal-form textarea,.goal-modal select { display:block; width:100%; margin-top:6px; padding:10px; border:1px solid var(--control-border); background:var(--panel); color:var(--text); border-radius:6px; }
 .goal-fields { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-.goal-form fieldset { padding:12px; border:1px solid var(--border); border-radius:8px; }
-.goal-form legend { padding:0 6px; font-size:12px; }
-.goal-form label.goal-participant-choice { display:flex; align-items:center; gap:10px; margin:10px 0; }
-.goal-form .goal-participant-choice input { width:16px; height:16px; }
-.goal-participant-choice small { color:var(--muted); margin-left:auto; }
+.goal-channel-task { padding:14px; border:1px solid var(--border); border-radius:8px; }
+.goal-channel-task h4 { margin:0; font-size:14px; }
+.goal-participation { list-style:none; margin:10px 0 0; padding:0; }
+.goal-participation li { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px 16px; padding:9px 0; border-top:1px solid var(--border); font-size:12px; overflow-wrap:anywhere; }
+.goal-participation li>div { min-width:0; }
+.goal-participation small { display:block; color:var(--muted); }
+.goal-participation span { font-size:11px; color:var(--accent); }
 .goal-help,.goal-status { color:var(--muted); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .goal-help { margin:12px 0; }
 .goal-list { display:grid; gap:8px; }

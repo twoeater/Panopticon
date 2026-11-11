@@ -22,9 +22,15 @@ async function setup() {
   await room.call(member,"channel_join",{channelId:channel.id,password:"test-password"});
   const pair:any=await room.call(owner,"pair_create"),auth=await room.pair(pair.code,"fixture"),device=(await room.authenticate(auth.token))!;
   const participants=await room.call(device,"register",{channelId:channel.id,capabilities:["goals-v1"],profiles:[{id:"a",name:"A",provider:"openai"},{id:"b",name:"B",provider:"grok"}]}) as Participant[];
-  const start=(args:Record<string,unknown>={},actor=member)=>room.call(actor,"goal_start",{channelId:channel.id,requestId:crypto.randomUUID(),title:"검증 목표",instructions:"공유 목표 지시",deadline:Date.now()+3600000,participantIds:participants.map(p=>p.id),...args}) as Promise<Goal>;
+  const start=(args:Record<string,unknown>={},actor=member)=>room.call(actor,"goal_start",{channelId:channel.id,requestId:crypto.randomUUID(),title:"검증 목표",instructions:"공유 목표 지시",deadline:Date.now()+3600000,...args}) as Promise<Goal>;
   const poll=()=>room.poll(device,{channelId:channel.id,capabilities:["goals-v1"],historyMessageCount:40,goalHistoryMessageCount:1});
   return {room,sqlite,channel,device,participants,start,poll};
+}
+async function connectMember(f:Awaited<ReturnType<typeof setup>>,supported=true) {
+  const pair:any=await f.room.call(member,"pair_create"),auth=await f.room.pair(pair.code,"member runner"),device=(await f.room.authenticate(auth.token))!;
+  const profiles=[{id:"other-ai",name:"Other AI",provider:"anthropic"}];
+  const register=()=>f.room.call(device,"register",{channelId:f.channel.id,profiles,capabilities:supported?["goals-v1"]:[]}) as Promise<Participant[]>;
+  return {device,profiles,participants:await register(),register};
 }
 function result(turn:TurnJob,decision="agree") {
   switch(turn.job.phase) {
@@ -42,7 +48,7 @@ async function untilVote(f:Awaited<ReturnType<typeof setup>>) {
   }
   throw new Error("vote not reached");
 }
-test("human members can start goals; one live goal and capability-gated fixed roster",async()=>{
+test("human members can start channel goals; one live goal and capability-gated participation",async()=>{
   const f=await setup();
   try {
     const g=await f.start({requestId:"same"});
@@ -295,4 +301,90 @@ test("goal request quotas persist once per goal while internal call limits reset
     assert.equal(ledger.db.prepare("SELECT count(*) n FROM requests").get()!.n,1);
     assert.equal(ledger.chargeCall(second,true,limits),true);
   }finally{ledger.close();assert.ok(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep));await rm(dir,{recursive:true,force:true});}
+});
+
+test("channel tasks automatically include other owners and ignore legacy recipient selection",async()=>{
+  const f=await setup();
+  try {
+    const other=await connectMember(f),legacy=await connectMember(f,false);
+    const g=await f.start({participantIds:[f.participants[0].id]});
+    const members=JSON.parse(g.roster);assert.equal(members.length,3);
+    assert.ok(members.some((p:any)=>p.id===other.participants[0].id));
+    assert.ok(!members.some((p:any)=>p.id===legacy.participants[0].id));
+    const t=(await f.room.poll(other.device,{channelId:f.channel.id,capabilities:["goals-v1"]})).jobs[0];
+    assert.equal(t.goal!.goal.id,g.id);assert.equal(t.job.phase,"goal_discuss");
+    assert.equal(t.goal!.goal.instructions,"공유 목표 지시");
+    assert.equal((await f.room.poll(legacy.device,{channelId:f.channel.id})).jobs.length,0);
+  }finally{f.sqlite.close();}
+});
+
+test("new AI joins invalidate in-flight evaluations once and join the next discussion",async()=>{
+  const f=await setup();
+  try {
+    const g=await f.start(),first=await untilVote(f),oldProposal=first.goal!.proposal!.id;
+    await f.room.complete(f.device,{jobId:first.job.id,goalResult:result(first)});
+    const outstanding=(await f.poll()).jobs[0],other=await connectMember(f);
+    const joined=await f.room.goals.get(g.id);
+    assert.equal(joined.phase,"waiting");assert.equal(joined.proposalId,null);assert.equal(JSON.parse(joined.roster).length,3);
+    assert.equal(joined.deadline,g.deadline);assert.ok(joined.nextRunAt>Date.now()+50000);
+    await assert.rejects(f.room.complete(f.device,{jobId:outstanding.job.id,goalResult:result(outstanding)}),/유효하지/);
+    assert.equal((await f.room.goals.overview(joined)).agreeCount,0);
+    assert.equal(f.sqlite.prepare("SELECT count(*) n FROM goalVotes WHERE proposalId=?").get(oldProposal)!.n,1);
+    await other.register();assert.equal((await f.room.goals.get(g.id)).revision,joined.revision);
+    f.sqlite.prepare("UPDATE goals SET nextRunAt=0 WHERE id=?").run(g.id);
+    // Complete any sequential summary work until the new discussion is ready.
+    let discussion:TurnJob|undefined;
+    for(let i=0;i<10&&!discussion;i++)for(const device of [f.device,other.device]) {
+      const t=(await f.room.poll(device,{channelId:f.channel.id,capabilities:["goals-v1"]})).jobs[0];
+      if(!t)continue;
+      if(t.job.phase==="goal_discuss"){discussion=t;break;}
+      await f.room.complete(device,{jobId:t.job.id,goalResult:result(t)});
+    }
+    assert.ok(discussion);assert.equal(discussion.goal!.participants.length,3);
+    assert.equal(f.sqlite.prepare("SELECT count(*) n FROM jobs WHERE roundId=?").get(discussion.round.id)!.n,3);
+    assert.equal(discussion.goal!.votes.length,0);
+    // Losing a connection cannot remove that AI from the consensus denominator.
+    await f.room.call(other.device,"register",{channelId:f.channel.id,profiles:[],capabilities:["goals-v1"]});
+    await f.poll();assert.equal(JSON.parse((await f.room.goals.get(g.id)).roster).length,3);
+  }finally{f.sqlite.close();}
+});
+
+test("an empty channel task waits for a capable runner instead of producing empty consensus",async()=>{
+  const f=await setup();
+  try {
+    f.sqlite.exec("UPDATE participants SET goalsSupported=0");
+    const g=await f.start();assert.deepEqual(JSON.parse(g.roster),[]);assert.equal(g.status,"active");
+    assert.equal((await f.poll()).jobs.length,0);assert.equal(f.sqlite.prepare("SELECT count(*) n FROM jobs").get()!.n,0);
+    const legacy=await connectMember(f,false);assert.equal(JSON.parse((await f.room.goals.get(g.id)).roster).length,0);
+    await f.room.call(legacy.device,"register",{channelId:f.channel.id,profiles:legacy.profiles,capabilities:["goals-v1"]});
+    const ready=await f.room.goals.get(g.id);assert.equal(ready.phase,"goal_discuss");assert.equal(JSON.parse(ready.roster).length,1);
+    const t=(await f.room.poll(legacy.device,{channelId:f.channel.id,capabilities:["goals-v1"]})).jobs[0];assert.equal(t.goal!.goal.id,g.id);
+  }finally{f.sqlite.close();}
+});
+
+test("late connections cannot expand a finalizing or completed task",async()=>{
+  const f=await setup();
+  try {
+    const g=await f.start();
+    f.sqlite.prepare("UPDATE goals SET deadline=?,finalDeadline=? WHERE id=?").run(Date.now()-1,Date.now()+600000,g.id);
+    const other=await connectMember(f);let current=await f.room.goals.get(g.id);
+    assert.equal(current.status,"finalizing");assert.equal(JSON.parse(current.roster).length,2);
+    assert.equal((await f.room.poll(other.device,{channelId:f.channel.id,capabilities:["goals-v1"]})).jobs.length,0);
+    f.sqlite.prepare("UPDATE goals SET finalDeadline=1 WHERE id=?").run(g.id);
+    await f.poll();current=await f.room.goals.get(g.id);assert.equal(current.status,"completed");
+    await connectMember(f);assert.equal((await f.room.goals.get(g.id)).roster,current.roster);
+  }finally{f.sqlite.close();}
+});
+
+test("automatic joins respect channel pause and never retry a held task",async()=>{
+  const f=await setup();
+  try {
+    const g=await f.start();await f.room.call(owner,"channel_update",{channelId:f.channel.id,paused:true});
+    await connectMember(f);let current=await f.room.goals.get(g.id);
+    assert.equal(JSON.parse(current.roster).length,3);assert.equal(current.roundId,null);assert.equal(current.deadline,g.deadline);
+    f.sqlite.prepare("UPDATE goals SET phase='held',lastError='목표 보류: 호출 한도' WHERE id=?").run(g.id);
+    await connectMember(f);current=await f.room.goals.get(g.id);
+    assert.equal(current.phase,"held");assert.equal(current.lastError,"목표 보류: 호출 한도");assert.equal(JSON.parse(current.roster).length,4);
+    await f.room.call(owner,"channel_update",{channelId:f.channel.id,paused:false});assert.equal((await f.poll()).jobs.length,0);
+  }finally{f.sqlite.close();}
 });

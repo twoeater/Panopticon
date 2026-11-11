@@ -15,13 +15,14 @@ import {Ledger} from "../runner/ledger.ts";
 import {turnBudgetId} from "../lib/goal-protocol.ts";
 
 const owner:Actor={id:"owner",name:"Owner",kind:"user"}, member:Actor={id:"member",name:"Member",kind:"user"};
-async function setup() {
+async function setup(participantCount=2) {
   const {db,sqlite}=testDatabase(),room=new RoomService(db);
   const channel:any=await room.call(owner,"channel_create",{name:"goals",password:"test-password"});
   await room.call(owner,"channel_update",{channelId:channel.id,heartbeatEnabled:false});
   await room.call(member,"channel_join",{channelId:channel.id,password:"test-password"});
   const pair:any=await room.call(owner,"pair_create"),auth=await room.pair(pair.code,"fixture"),device=(await room.authenticate(auth.token))!;
-  const participants=await room.call(device,"register",{channelId:channel.id,capabilities:["goals-v1"],profiles:[{id:"a",name:"A",provider:"openai"},{id:"b",name:"B",provider:"grok"}]}) as Participant[];
+  const profiles=Array.from({length:participantCount},(_,i)=>({id:String.fromCharCode(97+i),name:String.fromCharCode(65+i),provider:i%2?"grok":"openai"}));
+  const participants=await room.call(device,"register",{channelId:channel.id,capabilities:["goals-v1"],profiles}) as Participant[];
   const start=(args:Record<string,unknown>={},actor=member)=>room.call(actor,"goal_start",{channelId:channel.id,requestId:crypto.randomUUID(),title:"검증 목표",instructions:"공유 목표 지시",deadline:Date.now()+3600000,...args}) as Promise<Goal>;
   const poll=()=>room.poll(device,{channelId:channel.id,capabilities:["goals-v1"],historyMessageCount:40,goalHistoryMessageCount:1});
   return {room,sqlite,channel,device,participants,start,poll};
@@ -67,7 +68,7 @@ test("human members can start channel goals; one live goal and capability-gated 
     await f.room.call(owner,"goal_cancel",{channelId:f.channel.id,goalId:next.id});
   }finally{f.sqlite.close();}
 });
-test("all participants must submit explicit votes and personal conclusions for early completion",async()=>{
+test("a two-participant majority requires explicit votes and personal conclusions from both",async()=>{
   const f=await setup();
   try{
     const g=await f.start();let t=await untilVote(f);
@@ -83,6 +84,86 @@ test("all participants must submit explicit votes and personal conclusions for e
     assert.equal(f.sqlite.prepare("SELECT count(*) n FROM goalVotes").get()!.n,2);
     assert.equal(f.sqlite.prepare("SELECT count(*) n FROM messages WHERE phase='goal_conclusion'").get()!.n,2);
     assert.ok(f.sqlite.prepare("SELECT count(*) n FROM goalCheckpoints").get()!.n);
+    assert.equal((await f.poll()).jobs.length,0);
+  }finally{f.sqlite.close();}
+});
+
+test("a failed discussion participant cannot veto the successful participants",async()=>{
+  const f=await setup();
+  try {
+    const g=await f.start(),failed=(await f.poll()).jobs[0];
+    await f.room.complete(f.device,{jobId:failed.job.id,error:"API unavailable"});
+    const good=(await f.poll()).jobs[0];
+    await f.room.complete(f.device,{jobId:good.job.id,goalResult:result(good)});
+    assert.notEqual((await f.room.goals.get(g.id)).phase,"held");
+    assert.equal((await untilVote(f)).job.phase,"goal_vote");
+    assert.equal(f.sqlite.prepare("SELECT status FROM jobs WHERE id=?").get(failed.job.id)!.status,"failed");
+  }finally{f.sqlite.close();}
+});
+
+for(const finalizing of [false,true])test(`five of eight approve with missing and failed participants (${finalizing?"final":"early"})`,async()=>{
+  const f=await setup(8);
+  try {
+    const g=await f.start();
+    if(finalizing)f.sqlite.prepare("UPDATE goals SET deadline=?,finalDeadline=? WHERE id=?").run(Date.now()-1,Date.now()+600000,g.id);
+    const failed=await untilVote(f);
+    await f.room.complete(f.device,{jobId:failed.job.id,blocked:true,error:"자동 대화 한도"});
+    // Leave one claimed evaluation unanswered to exercise late completion protection.
+    const late=(await f.poll()).jobs[0];
+    let payload:any;
+    for(let i=1;i<=5;i++) {
+      const t=(await f.poll()).jobs[0];assert.equal(t.job.phase,"goal_vote");
+      payload={jobId:t.job.id,goalResult:result(t)};
+      await f.room.complete(f.device,payload);
+      if(i<5)assert.notEqual((await f.room.goals.get(g.id)).status,"completed");
+    }
+    const done=await f.room.goals.get(g.id);
+    assert.equal(done.status,"completed");assert.equal(done.outcome,"majority");
+    const detail=await f.room.goals.detail(done);
+    assert.equal(detail.votes.length,5);assert.equal(detail.opinions.length,5);assert.equal(detail.participants.length,8);
+    assert.equal((await f.room.complete(f.device,payload)).duplicate,true);
+    await assert.rejects(f.room.complete(f.device,{jobId:late.job.id,goalResult:result(late)}),/유효하지/);
+    assert.equal((await f.poll()).jobs.length,0);
+    assert.equal(f.sqlite.prepare("SELECT count(*) n FROM jobs WHERE roundId=? AND status='cancelled'").get(late.round.id)!.n,2);
+  }finally{f.sqlite.close();}
+});
+
+test("four of eight is not a majority and abstentions, failures and dissent keep their places",async()=>{
+  const f=await setup(8);
+  try {
+    const g=await f.start();let t=await untilVote(f);
+    for(let i=0;i<8;i++) {
+      if(i)t=(await f.poll()).jobs[0];
+      await f.room.complete(f.device,i===7?{jobId:t.job.id,error:"API unavailable"}:{jobId:t.job.id,goalResult:result(t,i<4?"agree":i===6?"abstain":"disagree")});
+    }
+    const waiting=await f.room.goals.get(g.id);assert.equal(waiting.status,"active");assert.equal(waiting.phase,"waiting");
+    assert.equal(waiting.outcome,null);assert.ok(waiting.nextRunAt>Date.now()+50000);
+    const detail=await f.room.goals.detail(waiting);assert.equal(detail.votes.length,7);assert.equal(detail.participants.length,8);
+    assert.equal(detail.votes.filter(v=>v.decision==="agree").length,4);
+  }finally{f.sqlite.close();}
+});
+
+test("a final evaluation with no usable votes ends unresolved without another round",async()=>{
+  const f=await setup();
+  try {
+    const g=await f.start();
+    f.sqlite.prepare("UPDATE goals SET deadline=?,finalDeadline=? WHERE id=?").run(Date.now()-1,Date.now()+600000,g.id);
+    let t=await untilVote(f);
+    await f.room.complete(f.device,{jobId:t.job.id,error:"unavailable"});
+    t=(await f.poll()).jobs[0];await f.room.complete(f.device,{jobId:t.job.id,skipped:true});
+    const done=await f.room.goals.get(g.id);assert.equal(done.status,"completed");assert.equal(done.outcome,"unresolved");
+    assert.equal((await f.poll()).jobs.length,0);
+  }finally{f.sqlite.close();}
+});
+
+test("a required summary failure still holds without silently dropping unprocessed history",async()=>{
+  const f=await setup();
+  try {
+    const g=await f.start();
+    for(let i=0;i<2;i++){const t=(await f.poll()).jobs[0];await f.room.complete(f.device,{jobId:t.job.id,goalResult:result(t)});}
+    const summary=(await f.poll()).jobs[0];assert.equal(summary.job.phase,"goal_compact");
+    await f.room.complete(f.device,{jobId:summary.job.id,error:"문맥 상한 초과"});
+    const held=await f.room.goals.get(g.id);assert.equal(held.phase,"held");assert.equal(held.summaryThrough,0);
     assert.equal((await f.poll()).jobs.length,0);
   }finally{f.sqlite.close();}
 });

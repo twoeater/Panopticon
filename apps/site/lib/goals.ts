@@ -1,5 +1,6 @@
 import { AppError, id, now, requiredString, type Actor, type Channel, type DbStatement, type Goal, type GoalContext, type GoalMember, type GoalPhase, type GoalProposal, type GoalSummary, type GoalVote, type Job, type Message, type Participant, type Round } from "./domain.ts";
 import { digest, rateLimit } from "./security.ts";
+import { goalMajorityThreshold } from "./goal-protocol.ts";
 import type { RoomService } from "./service.ts";
 
 const live = (g: Goal) => g.status === "active" || g.status === "finalizing";
@@ -210,21 +211,34 @@ export class Goals {
     if(!g.roundId)return;
     await this.room.run("UPDATE jobs SET status=CASE WHEN status='running' THEN 'uncertain' ELSE 'skipped' END,error='목표 작업 응답 기한 초과' WHERE roundId=? AND status IN ('pending','running') AND createdAt<?",g.roundId,time-300000);
     const jobs=await this.room.all<Job>("SELECT * FROM jobs WHERE roundId=?",g.roundId);
-    if(!jobs.length || jobs.some(j=>j.status==="pending"||j.status==="running"))return;
+    if(!jobs.length)return;
     const current=await this.get(g.id);
     if(current.revision!==g.revision)return;
     g=current;
-    const blocked=jobs.find(j=>j.error?.startsWith("목표 보류:"));
-    if(blocked || ((g.phase==="goal_compact"||g.phase==="goal_propose")&&!jobs.some(j=>j.status==="completed"))) {
-      await this.change(g,{phase:"held",roundId:null,lastError:blocked?.error||"목표 보류: 요약·초안 작업이 완료되지 않았습니다. 실행기를 확인한 뒤 다시 시도해 주세요."});return;
+    if(g.phase==="goal_vote") {
+      const votes=await this.room.all<GoalVote>("SELECT * FROM goalVotes WHERE goalId=? AND proposalId=?",g.id,g.proposalId);
+      const members=roster(g);
+      const agreed=members.filter(p=>votes.some(v=>v.participantId===p.id&&v.decision==="agree"&&v.conclusion.trim())).length;
+      // The denominator includes missing, offline and abstaining participants.
+      // Once a strict majority is recorded, remaining votes cannot reverse it.
+      if(agreed>=goalMajorityThreshold(members.length)) {
+        await this.change(g,{status:"completed",outcome:agreed===members.length?"unanimous":"majority",completedAt:time,roundId:null});return;
+      }
+    }
+    if(jobs.some(j=>j.status==="pending"||j.status==="running"))return;
+    if(g.phase==="goal_vote" && g.status==="finalizing") {
+      await this.change(g,{status:"completed",outcome:"unresolved",completedAt:time,roundId:null});return;
+    }
+    // An individual failure is not a veto over usable discussion or votes.
+    // A phase with no usable result still stops rather than retrying forever.
+    if(!jobs.some(j=>j.status==="completed")) {
+      const cause=jobs.find(j=>j.error)?.error?.replace(/^목표 (?:보류|작업 실패): /,"");
+      await this.change(g,{phase:"held",roundId:null,lastError:"목표 보류: 유효한 단계 결과가 없습니다. "+(cause||"실행기를 확인한 뒤 다시 시도해 주세요.")});return;
     }
     if(g.phase==="goal_compact") { await this.next(g,g.afterCompact);return; }
     if(g.phase==="goal_discuss") { await this.next(g,"goal_propose");return; }
     if(g.phase==="goal_propose") { await this.next(g,"goal_vote");return; }
-    const votes=await this.room.all<GoalVote>("SELECT * FROM goalVotes WHERE proposalId=?",g.proposalId);
-    const agreed=roster(g).length>0&&roster(g).every(p=>votes.some(v=>v.participantId===p.id&&v.decision==="agree"&&v.conclusion.trim()));
-    if(agreed || g.status==="finalizing") await this.change(g,{status:"completed",outcome:agreed?"unanimous":"unresolved",completedAt:time,roundId:null});
-    else await this.change(g,{phase:"waiting",roundId:null,nextRunAt:time+g.intervalSeconds*1000});
+    await this.change(g,{phase:"waiting",roundId:null,nextRunAt:time+g.intervalSeconds*1000});
   }
   async context(round: Round,count: number) {
     const g=await this.get(round.goalId!);
@@ -281,7 +295,7 @@ export class Goals {
         extras.push(message("goal_vote",({agree:"동의",disagree:"반대",abstain:"판단 보류"} as Record<string,string>)[String(result.decision)]+" · 초안 "+g.cycle+"\n"+reason),message("goal_conclusion",conclusion,":conclusion"));
       } else extras.push(message("goal_discuss",requiredString(result.text??args.text,"목표 토의",24000)));
     }
-    const error=failed?"목표 보류: "+String(args.error||"실행기 호출 한도 또는 문맥 상한").slice(0,900):skipped?"의견 또는 결론 미제출":null;
+    const error=failed?"목표 작업 실패: "+String(args.error||"실행기 호출 한도 또는 문맥 상한").slice(0,900):skipped?"의견 또는 결론 미제출":null;
     await this.room.db.batch([
       this.statement("UPDATE jobs SET status=?,error=?,resultToken=? WHERE id=? AND status='running' AND EXISTS (SELECT 1 FROM goals WHERE id=? AND revision=? AND roundId=?)",status,error,token,job.id,g.id,g.revision,round.id),
       ...extras,

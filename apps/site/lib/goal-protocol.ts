@@ -1,4 +1,5 @@
 import type { TurnJob } from "./domain.ts";
+export const goalMajorityThreshold=(participantCount:number)=>Math.floor(participantCount/2)+1;
 export const turnBudgetId=(turn:TurnJob)=>turn.goal?"goal:"+turn.goal.goal.id+":cycle:"+turn.goal.goal.cycle:turn.round.id;
 export function validGoalResult(turn: TurnJob,result: Record<string,unknown>): boolean {
   const text=(value:unknown,max:number)=>typeof value==="string"&&Boolean(value.trim())&&value.length<=max;

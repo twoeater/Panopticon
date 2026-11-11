@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { apiTurn } from "../runner/api.ts";
+import { apiTurn, ModelResponseError } from "../runner/api.ts";
 import { defaults, parseConfig, resolveApiConnection, resolveApiKey, type Profile } from "../runner/config.ts";
 
 function profile(overrides: Partial<Profile> = {}): Profile {
@@ -26,6 +26,29 @@ function mockSDK(response: unknown) {
     load: async (name: string) => { packageName = name; return { default: Client }; },
   };
 }
+
+test("Responses rejects incomplete, empty and refused results with safe specific errors and no retry",async()=>{
+  for(const [reply,expected] of [
+    [{status:"incomplete",incomplete_details:{reason:"max_output_tokens"},output_text:'{"summary":"partial"}',usage:{output_tokens:128000,output_tokens_details:{reasoning_tokens:127000}}},/출력 한도\(128000 토큰\).*출력 128000, 추론 127000/],
+    [{status:"incomplete",incomplete_details:{reason:"content_filter"},output_text:"partial"},/콘텐츠 필터/],
+    [{status:"incomplete",incomplete_details:{reason:"private-secret"},output_text:"partial"},/미완료/],
+    [{status:"failed",error:{message:"private-secret"},output_text:"partial"},/응답 완료/],
+    [{status:"completed",output_text:"",output:[{type:"message",content:[{type:"refusal",refusal:"private-secret"}]}]},/응답을 거절/],
+    [{status:"completed",output_text:"  "},/최종 답변/],
+  ] as const) {
+    const mock=mockSDK(reply);
+    await assert.rejects(()=>apiTurn(profile({maxOutputTokens:128000}),"system","input",new AbortController().signal,mock.load),error=>{
+      assert.ok(error instanceof ModelResponseError);assert.match(error.message,expected);assert.doesNotMatch(error.message,/private-secret|partial/);return true;
+    });
+    assert.equal(mock.calls.length,1);
+  }
+});
+
+test("Anthropic output exhaustion is detected even when a partial JSON body is present",async()=>{
+  const mock=mockSDK({stop_reason:"max_tokens",content:[{type:"text",text:'{"summary":"partial"}'}],usage:{output_tokens:512}});
+  await assert.rejects(()=>apiTurn(profile({provider:"anthropic",maxOutputTokens:512}),"system","input",new AbortController().signal,mock.load),/출력 한도\(512 토큰\).*출력 512/);
+  assert.equal(mock.calls.length,1);
+});
 
 test("provider defaults preserve existing transports and isolate EXAONE/compatible credentials", () => {
   for (const [provider, format, baseURL] of [

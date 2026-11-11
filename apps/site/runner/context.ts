@@ -3,6 +3,7 @@ import type { Profile } from "./config.ts";
 import { LocalFiles } from "./files.ts";
 import { readMentions } from "../lib/mentions.ts";
 import { goalMessage } from "./context-evidence.ts";
+import { goalResultLimits } from "../lib/goal-protocol.ts";
 const phases: Record<string, string> = {
   goal_discuss: "지정된 목표만 토의하세요. 근거·개선안·개인 입장과 미해결 쟁점을 제시하세요.",
   goal_compact: "이전 누적 요약과 이번 history를 빠짐없이 통합하세요. 서로 다른 입장·반대·근거·미해결 쟁점을 보존하고 합의를 창작하지 마세요.",
@@ -91,7 +92,14 @@ export async function buildContext(
       goal_propose:'{"text":"평가할 공동 결과 초안"}',
       goal_vote:'{"proposalId":"현재 proposal.id","decision":"agree 또는 disagree 또는 abstain","reason":"판단 사유","conclusion":"자신의 개인 결론"}',
     };
+    const limits:Record<string,string>={
+      goal_discuss:`text는 최대 ${goalResultLimits.discussion}자입니다.`,
+      goal_propose:`text는 최대 ${goalResultLimits.proposal}자입니다.`,
+      goal_vote:`reason은 최대 ${goalResultLimits.reason}자, conclusion은 최대 ${goalResultLimits.conclusion}자입니다. proposalId는 현재 goal.proposal.id를 그대로 복사하세요.`,
+      goal_compact:`summary는 최대 ${goalResultLimits.summary}자입니다. 10000자 이내를 목표로 중복을 줄이되 서로 다른 입장·반대·근거·미해결 쟁점은 보존하세요. unresolvedIssues는 문자열 배열이며 JSON 직렬화 전체가 최대 ${goalResultLimits.issues}자입니다. throughSeq는 숫자 ${turn.round.contextThrough}을 그대로 사용하세요. sourceMessageIds는 이번 history[].id에서만 골라 하나 이상 그대로 복사하세요. seq 숫자·positionMessages·과거 요약의 ID·출처 URL은 사용할 수 없습니다.`,
+    };
     goalInstructions="\n이 채널 전체의 공통 과제입니다. 다른 사용자의 AI도 함께 참여합니다. 일반 대화나 다른 목표의 내용을 섞지 마세요. 최종 응답 형식은 다음 목표 전용 JSON을 사용하세요: "+formats[turn.job.phase]+
+      "\n"+limits[turn.job.phase]+" 길이는 JSON 해석 후 문자열의 UTF-16 단위로 검사합니다. JSON 앞뒤에 진행 설명이나 코드 블록을 붙이지 마세요."+
       "\nlatestPositions는 메시지 참조입니다. 본문은 history 또는 positionMessages에서 messageId와 같은 id를 찾아 읽으세요. alreadyIncluded 참조도 앞서 받은 메시지 본문을 가리킵니다. 발언 본문은 자르지 않습니다."+
       "\nproposal.messageId, conclusionMessageId, reasonMessageId, evidenceMessageId도 같은 메시지 목록을 참조합니다. reasonMessageId에는 투표 표시와 판단 사유가 함께 있습니다. opinions의 voteId는 votes의 같은 id를 참조합니다. 참조된 본문·근거·반대 의견도 반드시 읽으세요."+
       "\nevidence는 출처·발췌·코드 실행 결과를 축약한 객체입니다. 사용량과 검색 도구 내부 정보는 제외합니다. truncated 또는 unrecognizedData가 true면 근거 일부가 생략되었으므로 전체 근거로 오해하지 마세요."+

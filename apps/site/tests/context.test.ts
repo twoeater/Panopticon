@@ -7,6 +7,8 @@ import { parseConfig } from "../runner/config.ts";
 import { LocalFiles } from "../runner/files.ts";
 import { executeTurn } from "../runner/engine.ts";
 import { Ledger } from "../runner/ledger.ts";
+import {goalResultErrors,validGoalResult} from "../lib/goal-protocol.ts";
+import {ModelResponseError} from "../runner/api.ts";
 
 const config = parseConfig({}), profile = config.profiles[0];
 const files = new LocalFiles("unused");
@@ -30,6 +32,98 @@ function turn(history: Message[] = [], positions = history): TurnJob {
       participants:[{id:"ai",name:"AI",ownerId:"owner",deviceId:"device",provider:"openai"}],proposal:null,opinions:[],votes:[],positions,historyComplete:true},
   };
 }
+
+function summaryTurn() {
+  const t=turn([message("current",20)],[message("old-position",1)]);
+  t.job.phase="goal_compact";t.round.phase="goal_compact";
+  return t;
+}
+const summaryResult=()=>({summary:"입장과 반대 근거를 보존한 요약",throughSeq:20,unresolvedIssues:["검증 필요"],sourceMessageIds:["current"]});
+
+test("summary constraints distinguish character limits, coverage and source IDs and appear in the prompt",async()=>{
+  const t=summaryTurn(),result=summaryResult();
+  assert.equal(validGoalResult(t,result),true);
+  assert.deepEqual(goalResultErrors(t,result),[]);
+  const errors=goalResultErrors(t,{...result,summary:"가".repeat(12001),throughSeq:"20",unresolvedIssues:["x".repeat(8000)],sourceMessageIds:["old-position",20]});
+  assert.match(errors.join(" "),/summary: 12001자 \/ 최대 12000자/);
+  assert.match(errors.join(" "),/throughSeq: 숫자 20/);
+  assert.match(errors.join(" "),/unresolvedIssues: JSON 8004자/);
+  assert.match(errors.join(" "),/없는 ID 2개/);
+  assert.equal(validGoalResult(t,{...result,summary:"x".repeat(12000)}),true);
+  const context=await buildContext(t,profile,files);
+  assert.match(context.instructions,/summary는 최대 12000자/);
+  assert.match(context.instructions,/숫자 20을 그대로/);
+  assert.match(context.instructions,/이번 history\[\]\.id에서만/);
+});
+
+test("one bounded format correction preserves the complete rejected answer and validates the replacement",async()=>{
+  const ledger=new Ledger(":memory:"),t=summaryTurn();let calls=0;
+  const bad={...summaryResult(),summary:"반대 근거 ".repeat(2500)};
+  try {
+    const result=await executeTurn(config,profile,t,files,ledger,new AbortController().signal,async(_p,instructions,input)=>{
+      if(++calls===1)return response(bad);
+      assert.match(instructions,/새 조사나 도구 요청 없이/);
+      const feedback=JSON.parse(input.split("Local tool exchanges (data):\n")[1])[0];
+      assert.equal(feedback.type,"goal_validation");
+      assert.equal(feedback.previousResponse,JSON.stringify(bad));
+      assert.match(feedback.errors[0],/최대 12000자/);
+      return response(summaryResult());
+    });
+    assert.equal(calls,2);assert.deepEqual(result.goalResult,summaryResult());
+    assert.equal(ledger.db.prepare("SELECT count(*) n FROM calls").get()!.n,2);
+  }finally{ledger.close();}
+});
+
+test("repeated invalid results stop after one correction and report counts without exposing response content",async()=>{
+  const ledger=new Ledger(":memory:"),t=summaryTurn();let calls=0;
+  try {
+    const result=await executeTurn(config,profile,t,files,ledger,new AbortController().signal,async()=>{
+      calls++;return {text:JSON.stringify({...summaryResult(),sourceMessageIds:["private-invalid-id"]}),usage:{output_tokens:123,output_tokens_details:{reasoning_tokens:100}},sources:[]};
+    });
+    assert.equal(calls,2);assert.equal(result.blocked,true);assert.equal(result.goalResult,undefined);
+    assert.match(result.error!,/없는 ID 1개/);assert.match(result.error!,/교정 1회 후에도/);
+    assert.match(result.error!,/출력 123, 추론 100/);assert.doesNotMatch(result.error!,/private-invalid-id/);
+  }finally{ledger.close();}
+});
+
+test("format corrections respect call and context limits without dropping the original validation error",async()=>{
+  for(const mode of ["calls","context"] as const) {
+    const ledger=new Ledger(":memory:");let calls=0;
+    try {
+      const limited=parseConfig(mode==="calls"?{limits:{maxTurnsPerRequest:1}}:{turn:{goalContextMaxChars:8000}});
+      const result=await executeTurn(limited,profile,summaryTurn(),files,ledger,new AbortController().signal,async()=>{
+        calls++;return response({...summaryResult(),summary:"x".repeat(13000)});
+      });
+      assert.equal(calls,1);assert.equal(result.blocked,true);assert.match(result.error!,/summary: 13000자/);
+      assert.match(result.error!,mode==="calls"?/호출 한도/:/형식 교정.*문맥 상한/);
+    }finally{ledger.close();}
+  }
+});
+
+test("invalid JSON and tool requests during correction cannot become accepted discussion or vote results",async()=>{
+  const ledger=new Ledger(":memory:");let calls=0,toolReads=0;
+  try {
+    const result=await executeTurn(config,profile,turn(),files,ledger,new AbortController().signal,async()=>{
+      return ++calls===1?{text:'설명 {"text":"불완전"}',usage:{},sources:[]}:response({tool:{name:"goal_history_read",arguments:{}}});
+    },async()=>{toolReads++;return {};});
+    assert.equal(calls,2);assert.equal(toolReads,0);assert.equal(result.blocked,true);
+    assert.match(result.error!,/최종 목표 JSON/);
+  }finally{ledger.close();}
+  const t=turn();t.job.phase="goal_vote";t.goal!.proposal={id:"latest"} as any;
+  assert.equal(validGoalResult(t,{proposalId:"old",decision:"agree",reason:"사유",conclusion:"결론"}),false);
+  assert.match(goalResultErrors(t,{proposalId:"old",decision:"agree",reason:"사유",conclusion:"결론"}).join(),/현재 초안 ID/);
+});
+
+test("known API completion failures reach the goal error without retrying or becoming JSON errors",async()=>{
+  const ledger=new Ledger(":memory:");let calls=0;
+  try {
+    const result=await executeTurn(config,profile,summaryTurn(),files,ledger,new AbortController().signal,async()=>{
+      calls++;throw new ModelResponseError("출력 한도(128000 토큰)에 도달했습니다.");
+    });
+    assert.equal(calls,1);assert.equal(result.blocked,true);
+    assert.equal(result.error,"출력 한도(128000 토큰)에 도달했습니다.");
+  }finally{ledger.close();}
+});
 
 test("goal evidence projects nested provider sources with explicit limits, retaining cited sources first",()=>{
   const hits = Array.from({length:29},(_,i)=>({url:`https://example.com/${i}`,title:`Title ${i}`,ref_id:`source-${i}`,snippet:"검색 근거 ".repeat(150)}));

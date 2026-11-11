@@ -2,6 +2,17 @@ import { resolveApiKey, resolveApiConnection, type Profile } from "./config.ts";
 import type { ModelResult } from "./adapters.ts";
 import { DEFAULT_TURN_TIMEOUT_SECONDS } from "../lib/execution-limits.ts";
 const packageImport = (name: string): Promise<any> => import(name);
+// Only locally constructed messages may be reported to the shared channel.
+export class ModelResponseError extends Error {}
+export function responseUsageSummary(usage:any):string {
+  const parts:[string,unknown][]=[
+    ["입력",usage?.input_tokens??usage?.prompt_tokens],
+    ["출력",usage?.output_tokens??usage?.completion_tokens],
+    ["추론",usage?.output_tokens_details?.reasoning_tokens??usage?.completion_tokens_details?.reasoning_tokens],
+  ];
+  const known=parts.filter(([,value])=>typeof value==="number"&&Number.isFinite(value)&&value>=0);
+  return known.length?` 토큰 사용: ${known.map(([name,value])=>`${name} ${value}`).join(", ")}.`:"";
+}
 export async function apiTurn(
   profile: Profile,
   instructions: string,
@@ -40,6 +51,7 @@ export async function apiTurn(
       },
       { signal },
     );
+    if(response.stop_reason==="max_tokens")throw new ModelResponseError(`API 출력 한도(${connection.maxOutputTokens} 토큰)에 도달해 답변이 잘렸습니다. maxOutputTokens를 확인해 주세요.`+responseUsageSummary(response.usage));
     return {
       text: response.content
         .filter((x: any) => x.type === "text")
@@ -68,10 +80,10 @@ export async function apiTurn(
     }, { signal });
     const choice = response.choices?.[0];
     if (choice?.finish_reason === "length")
-      throw new Error("출력 한도에 도달했습니다. maxOutputTokens를 늘려 주세요.");
+      throw new ModelResponseError(`출력 한도(${connection.maxOutputTokens} 토큰)에 도달했습니다. maxOutputTokens를 늘려 주세요.`+responseUsageSummary(response.usage));
     const text = choice?.message?.content;
     if (typeof text !== "string" || !text.trim())
-      throw new Error("API에서 최종 답변을 받지 못했습니다. 모델과 출력 한도를 확인해 주세요.");
+      throw new ModelResponseError("API에서 최종 답변을 받지 못했습니다. 모델과 출력 한도를 확인해 주세요."+responseUsageSummary(response.usage));
     return { text: text.trim(), usage: response.usage || null, sources: choice.message.annotations || [] };
   }
   const response = await client.responses.create(
@@ -86,6 +98,16 @@ export async function apiTurn(
     },
     { signal },
   );
+  if(response.status==="incomplete") {
+    const cause=response.incomplete_details?.reason==="max_output_tokens"
+      ? `출력 한도(${connection.maxOutputTokens} 토큰)에 도달했습니다. 이 한도에는 추론 토큰도 포함됩니다. maxOutputTokens를 확인해 주세요.`
+      : response.incomplete_details?.reason==="content_filter"?"콘텐츠 필터로 응답이 중단됐습니다.":"API 응답이 미완료 상태입니다.";
+    throw new ModelResponseError(cause+responseUsageSummary(response.usage));
+  }
+  if(response.status && response.status!=="completed")throw new ModelResponseError("API가 응답 완료를 보고하지 않았습니다."+responseUsageSummary(response.usage));
+  if(typeof response.output_text!=="string"||!response.output_text.trim())
+    throw new ModelResponseError((response.output?.some((x:any)=>x.type==="message"&&x.content?.some((c:any)=>c.type==="refusal"))
+      ?"API가 요청에 대한 응답을 거절했습니다.":"API에서 최종 답변을 받지 못했습니다.")+responseUsageSummary(response.usage));
   return {
     text: response.output_text || "",
     usage: response.usage || null,

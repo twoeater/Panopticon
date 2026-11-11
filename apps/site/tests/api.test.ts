@@ -126,3 +126,29 @@ test("Anthropic Messages uses the overridden HTTP endpoint and existing search t
   assert.equal(result.text, "answer");
   assert.equal(result.sources.length, 1);
 });
+
+test("reasoning effort is optional, validated and never added to default profiles",()=>{
+  assert.ok(defaults.profiles.every(p=>!Object.hasOwn(p,"reasoningEffort")));
+  for(const effort of ["none","minimal","low","medium","high","xhigh","max"] as const)
+    assert.equal(parseConfig({profiles:[profile({reasoningEffort:effort})]}).profiles[0].reasoningEffort,effort);
+  assert.equal(Object.hasOwn(parseConfig({profiles:[profile()]}).profiles[0],"reasoningEffort"),false);
+  for(const effort of [null,"",0,true,"automatic",{},[]])
+    assert.throws(()=>parseConfig({profiles:[{...profile(),reasoningEffort:effort}]}),/reasoningEffort/);
+  assert.throws(()=>parseConfig({profiles:[profile({transport:"cli",reasoningEffort:"low"})]}),/transport: api/);
+});
+
+test("API formats omit reasoning fields entirely unless the profile explicitly supplies an effort",async()=>{
+  for(const provider of ["openai","grok","exaone","anthropic","openai-compatible"] as const) {
+    const formats=provider==="anthropic"?["messages"] as const:provider==="exaone"?["chat-completions"] as const:["responses","chat-completions"] as const;
+    for(const apiFormat of formats)for(const effort of [undefined,"low","high","max","none"] as const) {
+      const p=profile({provider,apiFormat,baseURL:"https://api.example/v1",...(effort!==undefined?{reasoningEffort:effort}:{})});
+      const response={output_text:"ok",output:[],content:[{type:"text",text:"ok"}],choices:[{finish_reason:"stop",message:{content:"ok"}}]};
+      const mock=mockSDK(response);
+      await apiTurn(p,"system","input",new AbortController().signal,mock.load);
+      const body=mock.calls[0].body,field=apiFormat==="responses"?"reasoning":apiFormat==="messages"?"output_config":"reasoning_effort";
+      for(const key of ["reasoning","reasoning_effort","output_config"])assert.equal(Object.hasOwn(body,key),effort!==undefined&&key===field);
+      if(effort!==undefined)assert.deepEqual(body[field],apiFormat==="chat-completions"?effort:{effort});
+      assert.equal(Object.hasOwn(body,"thinking"),false);
+    }
+  }
+});

@@ -15,6 +15,7 @@ export type Profile = {
   baseURL?: string;
   apiFormat?: ApiFormat;
   maxOutputTokens?: number;
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   webSearch?: boolean;
 };
 export interface Config {
@@ -205,13 +206,15 @@ export function parseConfig(raw: any, base = process.cwd()): Config {
       throw new Error("webSearch는 true 또는 false여야 합니다.");
     if (p.maxOutputTokens !== undefined)
       int(p.maxOutputTokens, 1, 524288, "maxOutputTokens");
+    if (p.reasoningEffort !== undefined && !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(p.reasoningEffort))
+      throw new Error("reasoningEffort는 none, minimal, low, medium, high, xhigh, max 중 하나여야 합니다.");
     if (p.transport === "api" && p.provider !== "gemini")
       resolveApiConnection(p);
     if (p.transport === "cli") {
       if (p.provider !== "gemini" && !providers[p.provider].cli)
         throw new Error("이 provider는 transport: api만 지원합니다.");
-      if (p.baseURL !== undefined || p.apiFormat !== undefined || p.maxOutputTokens !== undefined)
-        throw new Error("baseURL·apiFormat·maxOutputTokens는 transport: api에서만 사용합니다.");
+      if (p.baseURL !== undefined || p.apiFormat !== undefined || p.maxOutputTokens !== undefined || p.reasoningEffort !== undefined)
+        throw new Error("baseURL·apiFormat·maxOutputTokens·reasoningEffort는 transport: api에서만 사용합니다.");
     }
   }
   return value;

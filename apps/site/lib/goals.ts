@@ -177,7 +177,20 @@ export class Goals {
     const members=roster(g), offset=(Math.max(cycle,1)-1)%members.length;
     const online=await this.room.all<{id:string}>("SELECT p.id FROM participants p JOIN devices d ON d.id=p.deviceId WHERE p.channelId=? AND p.enabled=1 AND p.goalsSupported=1 AND p.onlineAt>? AND d.revoked=0",g.channelId,now()-30000);
     const ordered=[...members.slice(offset),...members.slice(0,offset)];
-    const coordinator=ordered.find(p=>online.some(o=>o.id===p.id))||ordered[0];
+    let coordinator=ordered.find(p=>online.some(o=>o.id===p.id))||ordered[0];
+    if (phase==="goal_compact") {
+      const channel=await this.room.one<Channel>("SELECT * FROM channels WHERE id=?",g.channelId);
+      if (channel?.goalSummaryParticipantId) {
+        const fixed=members.find(p=>p.id===channel.goalSummaryParticipantId);
+        if (!fixed || !online.some(p=>p.id===fixed.id)) {
+          await this.change(g,{phase:"held",cycle,roundId:null,lastError:fixed
+            ? `목표 보류: 고정 요약 담당 ${fixed.name}이 오프라인이거나 목표 작업을 처리할 수 없습니다. 연결·설정을 확인한 뒤 다시 시도해 주세요.`
+            : "목표 보류: 고정 요약 담당이 이 목표의 참가 명단에 없습니다. 요약 담당 설정을 확인한 뒤 다시 시도해 주세요."});
+          return;
+        }
+        coordinator=fixed;
+      }
+    }
     const assigned=phase==="goal_compact"||phase==="goal_propose"?[coordinator]:members;
     const roundId="goal:"+g.id+":"+id(), time=now();
     await this.change(g,{phase,cycle,roundId,lastError:null,afterCompact:target},(guard,token)=>[

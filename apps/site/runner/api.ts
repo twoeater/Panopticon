@@ -23,6 +23,7 @@ export async function apiTurn(
       {
         model: profile.model,
         max_tokens: connection.maxOutputTokens,
+        ...(profile.reasoningEffort !== undefined ? { output_config: { effort: profile.reasoningEffort } } : {}),
         system: instructions,
         messages: [{ role: "user", content: input }],
         ...(profile.webSearch
@@ -60,6 +61,7 @@ export async function apiTurn(
         { role: "user", content: input },
       ],
       stream: false,
+      ...(profile.reasoningEffort !== undefined ? { reasoning_effort: profile.reasoningEffort } : {}),
       ...(profile.provider === "openai"
         ? { max_completion_tokens: connection.maxOutputTokens }
         : { max_tokens: connection.maxOutputTokens }),
@@ -79,6 +81,7 @@ export async function apiTurn(
       input,
       store: false,
       max_output_tokens: connection.maxOutputTokens,
+      ...(profile.reasoningEffort !== undefined ? { reasoning: { effort: profile.reasoningEffort } } : {}),
       ...(profile.webSearch ? { tools: [{ type: "web_search" }] } : {}),
     },
     { signal },

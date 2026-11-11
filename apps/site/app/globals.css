@@ -1026,6 +1026,17 @@ input[type="checkbox"] {
   font-size: 11px;
   line-height: 1.7;
 }
+.summary-select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
 .settings-row input:disabled {
   opacity: 0.5;
   cursor: not-allowed;

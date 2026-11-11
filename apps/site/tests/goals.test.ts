@@ -509,3 +509,69 @@ test("automatic joins respect channel pause and never retry a held task",async()
     await f.room.call(owner,"channel_update",{channelId:f.channel.id,paused:false});assert.equal((await f.poll()).jobs.length,0);
   }finally{f.sqlite.close();}
 });
+
+test("channel summary pin uses the selected AI across cycles and does not pin proposal authors",async()=>{
+  const f=await setup(3);
+  try {
+    const fixed=f.participants[1];
+    const updated:any=await f.room.call(owner,"channel_update",{channelId:f.channel.id,goalSummaryParticipantId:fixed.id});
+    assert.equal(updated.goalSummaryParticipantId,fixed.id);
+    const g=await f.start();
+    let firstProposal=false,summaryCount=0;
+    for(let i=0;i<30&&summaryCount<2;i++) {
+      let t=(await f.poll()).jobs[0];
+      if(!t){f.sqlite.prepare("UPDATE goals SET nextRunAt=0 WHERE id=?").run(g.id);t=(await f.poll()).jobs[0];}
+      assert.ok(t);
+      if(t.job.phase==="goal_compact"){assert.equal(t.participant.id,fixed.id);summaryCount++;}
+      if(t.job.phase==="goal_propose"&&!firstProposal){assert.equal(t.participant.id,f.participants[0].id);firstProposal=true;}
+      await f.room.complete(f.device,{jobId:t.job.id,goalResult:result(t,"disagree")});
+    }
+    assert.ok(firstProposal);assert.equal(summaryCount,2);
+    // Clearing the channel setting restores rotation for the next summary.
+    await f.room.call(owner,"channel_update",{channelId:f.channel.id,goalSummaryParticipantId:null});
+    assert.equal((await f.room.member(owner,f.channel.id)).goalSummaryParticipantId,null);
+  }finally{f.sqlite.close();}
+});
+
+test("offline pinned summarizer holds without fallback, reconnect requires retry and preserves the pin",async()=>{
+  const f=await setup();
+  try {
+    const other=await connectMember(f),fixed=other.participants[0];
+    await f.room.call(owner,"channel_update",{channelId:f.channel.id,goalSummaryParticipantId:fixed.id});
+    const g=await f.start();
+    for(let i=0;i<2;i++){const t=(await f.poll()).jobs[0];await f.room.complete(f.device,{jobId:t.job.id,goalResult:result(t)});}
+    const last=(await f.room.poll(other.device,{channelId:f.channel.id,capabilities:["goals-v1"]})).jobs[0];
+    f.sqlite.prepare("UPDATE participants SET onlineAt=? WHERE id=?").run(Date.now()-60000,fixed.id);
+    await f.room.complete(other.device,{jobId:last.job.id,goalResult:result(last)});
+    const held=await f.room.goals.get(g.id);assert.equal(held.phase,"held");assert.match(held.lastError!,/고정 요약 담당.*오프라인/);
+    assert.equal(f.sqlite.prepare("SELECT count(*) n FROM jobs WHERE phase='goal_compact'").get()!.n,0);
+    await other.register();assert.equal((await f.room.goals.get(g.id)).phase,"held");
+    await f.room.call(member,"goal_retry",{channelId:f.channel.id,goalId:g.id});
+    const summary=(await f.room.poll(other.device,{channelId:f.channel.id,capabilities:["goals-v1"]})).jobs[0];
+    assert.equal(summary.job.phase,"goal_compact");assert.equal(summary.participant.id,fixed.id);
+    assert.equal((await f.poll()).jobs.length,0);
+  }finally{f.sqlite.close();}
+});
+
+test("summary pin requires channel ownership and a capable registered member, never an identically named foreign AI",async()=>{
+  const f=await setup();
+  try {
+    const other=await connectMember(f),fixed=other.participants[0];
+    const change=(value:unknown,actor=owner)=>f.room.call(actor,"channel_update",{channelId:f.channel.id,goalSummaryParticipantId:value});
+    await assert.rejects(change(fixed.id,member));
+    for(const invalid of ["",false,23,[],"foreign"])await assert.rejects(change(invalid));
+    f.sqlite.prepare("UPDATE participants SET goalsSupported=0 WHERE id=?").run(fixed.id);
+    await assert.rejects(change(fixed.id),/목표 기능/);
+    await other.register();
+    f.sqlite.prepare("UPDATE participants SET name=? WHERE id=?").run(f.participants[0].name,fixed.id);
+    await change(f.participants[0].id);
+    const g=await f.start();
+    // A fixed participant absent from this goal must not be replaced by another AI.
+    f.sqlite.prepare("UPDATE goals SET roster=? WHERE id=?").run(JSON.stringify([fixed]),g.id);
+    const current=await f.room.goals.get(g.id);
+    f.sqlite.prepare("INSERT INTO messages(id,channelId,ownerId,author,kind,text,phase,goalId,createdAt) VALUES ('note',?,'owner','Owner','human','추가 의견','goal_discuss',?,?)").run(f.channel.id,g.id,Date.now());
+    await f.room.goals.next(current,"goal_propose");
+    assert.equal((await f.room.goals.get(g.id)).phase,"held");assert.match((await f.room.goals.get(g.id)).lastError!,/참가 명단/);
+    await change(null);assert.equal((await f.room.member(owner,f.channel.id)).goalSummaryParticipantId,null);
+  }finally{f.sqlite.close();}
+});

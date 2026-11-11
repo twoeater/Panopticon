@@ -26,7 +26,7 @@ import { Goals } from "./goals.ts";
 import { validTurnTimeout, JOB_DELIVERY_GRACE_MS, LEGACY_JOB_TIMEOUT_MS } from "./execution-limits.ts";
 
 const channelColumns =
-  "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,heartbeatParticipants,nextHeartbeatAt,paused,createdAt";
+  "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,heartbeatParticipants,goalSummaryParticipantId,nextHeartbeatAt,paused,createdAt";
 const profilePattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export class RoomService {
   db: Database;
@@ -265,6 +265,18 @@ export class RoomService {
             "invalid_participants",
             "자동 대화 참여 인원은 1~1000명 또는 전체 참여(0)여야 합니다.",
           );
+        const goalSummaryParticipantId = args.goalSummaryParticipantId === undefined
+          ? channel.goalSummaryParticipantId ?? null
+          : args.goalSummaryParticipantId;
+        if (goalSummaryParticipantId !== null && (typeof goalSummaryParticipantId !== "string" || !goalSummaryParticipantId || goalSummaryParticipantId.length > 100))
+          throw new AppError(400,"invalid_summary_participant","요약 담당은 참가자 ID 또는 null이어야 합니다.");
+        if (goalSummaryParticipantId && goalSummaryParticipantId !== channel.goalSummaryParticipantId) {
+          const participant=await this.one<Participant>(
+            "SELECT p.* FROM participants p JOIN devices d ON d.id=p.deviceId WHERE p.id=? AND p.channelId=? AND p.enabled=1 AND p.goalsSupported=1 AND d.revoked=0",
+            goalSummaryParticipantId,channelId,
+          );
+          if (!participant) throw new AppError(400,"invalid_summary_participant","이 채널에서 목표 기능을 지원하는 등록 AI를 선택해 주세요.");
+        }
         const paused =
           args.paused === undefined
             ? channel.paused
@@ -280,7 +292,7 @@ export class RoomService {
             "비밀번호는 8~256자입니다.",
           );
         await this.run(
-          "UPDATE channels SET situation=?,situationVersion=situationVersion+1,heartbeatSeconds=?,heartbeatParticipants=?,heartbeatEnabled=?,paused=?,nextHeartbeatAt=? WHERE id=?",
+          "UPDATE channels SET situation=?,situationVersion=situationVersion+1,heartbeatSeconds=?,heartbeatParticipants=?,heartbeatEnabled=?,paused=?,nextHeartbeatAt=?,goalSummaryParticipantId=? WHERE id=?",
           situation,
           seconds,
           heartbeatParticipants,
@@ -289,6 +301,7 @@ export class RoomService {
             : Number(Boolean(args.heartbeatEnabled)),
           paused,
           now() + seconds * 1000,
+          goalSummaryParticipantId,
           channelId,
         );
         if (typeof args.password === "string" && args.password.length) {

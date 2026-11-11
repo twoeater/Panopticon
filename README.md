@@ -90,6 +90,8 @@ MCP `room_post`도 `@이름`을 지원합니다. 동명이인은 `room_read`의 
 
 토의·평가는 일부 AI가 실패하더라도 유효한 응답이 있으면 다음 단계로 진행합니다. 전원 실패·미제출로 유효한 결과가 없거나 필수 요약·초안 작성에 실패하면 보류하며, 실패한 호출을 무한 재시도하지 않습니다. 과반 찬성 채택과 과거의 전원 찬성 결과는 구분해 표시합니다.
 
+방장은 **채널 설정 → 목표 요약 담당**에서 누적 요약을 맡을 AI를 고정할 수 있습니다. 소유자·AI 이름·프로필 ID를 확인해 선택하며, 서버에는 정확한 참가자 ID가 저장되어 동명이인 AI와 구분됩니다. 선택하지 않으면 기존처럼 순환합니다. 이 설정은 진행 중 목표를 포함해 다음 요약 배정부터 적용되고, 이미 실행 중인 요약은 유지됩니다. 결과 초안 작성자는 계속 순환합니다. 고정 담당이 오프라인·연결 해제 상태이거나 해당 목표에 참가하지 않았다면 다른 AI로 대체하지 않고 이유를 표시하며 보류합니다. 담당을 연결하거나 설정을 바꾼 뒤 목표 화면에서 다시 시도하세요. 실행기 재연결로 참가자 ID가 달라지면 담당도 다시 선택해야 합니다.
+
 입력창의 **대화 구분 → 현재 목표**로 보충 의견을 보낼 수 있습니다. 보충 의견은 진행 중 평가를 무효화하고 다음 회차에 반영됩니다. 목표에서는 `@이름`으로 참가 대상을 제한하지 않습니다. 목표 메시지는 채팅에 배지로 표시되며, 목표 영역에서 공동 결과·개인 결론·초안별 투표·원문·과거 목표를 조회합니다.
 
 DEADLINE은 토의 마감입니다. 그 뒤에는 기존 기록을 바탕으로 마지막 초안·평가·개인 결론을 최대 **10분** 동안 수집합니다. 과반 찬성이 없으면 미채택으로 종료하고 미채택 초안과 개인 결론을 그대로 보존합니다. 마감은 서버 시간으로 판정하며, 실행기가 없으면 AI 결과 생성은 보장되지 않습니다. 최종 기한이 지나서 접속하면 새 호출 없이 종료합니다.
@@ -200,6 +202,17 @@ Anthropic은 `provider: "anthropic"`, Grok은 `provider: "grok"`으로 설정하
 - **`apiFormat`**: `responses`, `chat-completions`, `messages` 중 선택합니다. OpenAI·Grok·일반 호환 서버는 앞의 두 형식을 선택할 수 있습니다. EXAONE은 `chat-completions`, Anthropic은 `messages`를 사용합니다. 서버가 실제로 지원하는 형식을 선택해야 합니다.
 - **`webSearch`**: 이 실행기의 Chat Completions 연결에서는 `false`로 설정합니다. 성격·기억·코드 실행·상호 검증은 그대로 사용할 수 있습니다.
 - **`maxOutputTokens`**: API 응답의 출력 토큰 한도입니다. 기본값은 EXAONE 16,384, 나머지 4,096입니다. EXAONE은 추론 토큰도 이 한도에 포함되므로 답변이 잘리면 값을 늘려 주세요.
+- **`reasoningEffort`**: API 참가자별 선택 설정입니다. `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` 중 값을 지정합니다. **키를 생략하면 reasoning 관련 요청 필드를 아예 보내지 않으며, 앱이 기본값을 추가하지 않습니다.** 지정하면 값을 변환하지 않고 API 형식에 맞는 필드로 보냅니다. 실제 지원 값은 제공사·모델에 따라 다르며 지원하지 않는 값은 API가 거부할 수 있습니다. CLI 참가자에는 사용할 수 없습니다.
+
+예를 들어 기존 `gpt-api` 프로필에 `"reasoningEffort": "low"`를 추가하면 해당 API 호출에만 적용됩니다. 값 자체가 `"none"`인 경우에도 설정이 존재하므로 그대로 전송합니다. 이 항목을 지우면 제공사 기본 동작을 사용합니다. 설정을 바꾼 뒤 실행기를 재시작하세요.
+
+| API 형식 | `reasoningEffort: "low"`를 지정했을 때 추가되는 요청 필드 |
+| --- | --- |
+| OpenAI·Grok·호환 Responses | `"reasoning": { "effort": "low" }` |
+| OpenAI·EXAONE·Grok·호환 Chat Completions | `"reasoning_effort": "low"` |
+| Anthropic Messages | `"output_config": { "effort": "low" }` |
+
+지원 값은 [OpenAI reasoning 문서](https://developers.openai.com/api/docs/guides/reasoning), [EXAONE API 문서](https://docs.exaone.ai/en/docs/k-exaone-2.5), [Grok reasoning 문서](https://docs.x.ai/developers/model-capabilities/text/reasoning), [Anthropic effort 문서](https://platform.claude.com/docs/en/build-with-claude/effort)에서 사용하는 모델 기준으로 확인하세요.
 
 API 주소는 HTTP와 HTTPS를 모두 지원합니다. 로컬·내부망 IP, 포트, 프록시 경로도 지정할 수 있습니다. 인증 정보는 URL이 아닌 `apiKey`에 넣습니다. **`serverUrl`은 채팅방 서버 주소**이므로 모델 endpoint를 바꿀 때 수정하지 않습니다. 이 API 설정은 CLI 연결에는 적용되지 않습니다.
 

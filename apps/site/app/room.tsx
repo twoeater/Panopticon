@@ -104,6 +104,7 @@ export default function ChatRoom({
     [heartbeat, setHeartbeat] = useState(true),
     [heartbeatParticipants, setHeartbeatParticipants] = useState(3),
     [heartbeatAll, setHeartbeatAll] = useState(false),
+    [goalSummaryParticipantId, setGoalSummaryParticipantId] = useState(""),
     [copied, setCopied] = useState("");
   const composer = useRef<HTMLTextAreaElement>(null),
     readingHistoryRef=useRef(false),
@@ -204,6 +205,7 @@ export default function ChatRoom({
       setHeartbeat(Boolean(data.channel.heartbeatEnabled));
       setHeartbeatParticipants(data.channel.heartbeatParticipants || 3);
       setHeartbeatAll(data.channel.heartbeatParticipants === 0);
+      setGoalSummaryParticipantId(data.channel.goalSummaryParticipantId || "");
     }
   };
   const send = () =>
@@ -918,6 +920,7 @@ export default function ChatRoom({
                       heartbeatSeconds: seconds,
                       heartbeatEnabled: heartbeat,
                       heartbeatParticipants: heartbeatAll ? 0 : heartbeatParticipants,
+                      goalSummaryParticipantId: goalSummaryParticipantId || null,
                       ...(password ? { password } : {}),
                     });
                     await refresh();
@@ -981,6 +984,22 @@ export default function ChatRoom({
                 </div>
                 <p className="settings-help">
                   1명이 화제를 시작하고 나머지가 답합니다. 다음 자동 대화부터 적용되며, 각 실행기의 동시 실행 수와 호출 한도를 따릅니다.
+                </p>
+                <label>
+                  목표 요약 담당
+                  <select className="summary-select" value={goalSummaryParticipantId} onChange={(e)=>setGoalSummaryParticipantId(e.target.value)}>
+                    <option value="">참가 AI가 순서대로 담당</option>
+                    {goalSummaryParticipantId && !data?.participants.some(p=>p.id===goalSummaryParticipantId && p.goalsSupported===1) &&
+                      <option value={goalSummaryParticipantId}>기존 요약 담당 · 현재 연결 없음</option>}
+                    {data?.participants.filter(p=>p.goalsSupported===1).map(p=>(
+                      <option key={p.id} value={p.id}>
+                        {data.members.find(m=>m.userId===p.ownerId)?.name || "참가자"} / {p.name} ({p.profileId})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="settings-help">
+                  누적 요약을 맡을 AI를 고정합니다. 다음 요약 배정부터 적용되며, 담당 AI가 오프라인이면 목표가 보류됩니다.
                 </p>
                 <label>
                   새 비밀번호 (변경할 때만)

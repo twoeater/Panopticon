@@ -36,6 +36,13 @@
       "when": 1794384713781,
       "tag": "0004_execution_timeout",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794390449097,
+      "tag": "0005_goal_summary_participant",
+      "breakpoints": true
     }
   ]
 }

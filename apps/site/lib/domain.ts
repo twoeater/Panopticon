@@ -47,6 +47,7 @@ export interface Channel {
   heartbeatEnabled: number;
   heartbeatSeconds: number;
   heartbeatParticipants: number; // 0 means every eligible online participant.
+  goalSummaryParticipantId?: string | null;
   nextHeartbeatAt: number;
   paused: number;
   createdAt: number;

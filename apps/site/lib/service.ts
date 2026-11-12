@@ -26,7 +26,7 @@ import { Goals } from "./goals.ts";
 import { validTurnTimeout, JOB_DELIVERY_GRACE_MS, LEGACY_JOB_TIMEOUT_MS } from "./execution-limits.ts";
 
 const channelColumns =
-  "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,heartbeatParticipants,goalSummaryParticipantId,nextHeartbeatAt,paused,createdAt";
+  "id,name,ownerId,situation,situationVersion,heartbeatEnabled,heartbeatSeconds,heartbeatParticipants,goalSummaryParticipantId,generalMessageLimit,generalPrunedThrough,historyRevision,nextHeartbeatAt,paused,createdAt";
 const profilePattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export class RoomService {
   db: Database;
@@ -73,6 +73,14 @@ export class RoomService {
         }
       : null;
   }
+  async pruneGeneralMessages(channelId: string) {
+    // Read the current setting and advance the watermark in the same transaction
+    // as deletion. Goal messages never participate in the limit or the deletion.
+    await this.db.batch([
+      this.db.prepare("UPDATE channels SET generalPrunedThrough=MAX(generalPrunedThrough,COALESCE((SELECT seq FROM messages WHERE channelId=? AND goalId IS NULL ORDER BY seq DESC LIMIT 1 OFFSET (SELECT generalMessageLimit FROM channels WHERE id=?)),0)) WHERE id=? AND generalMessageLimit>0").bind(channelId,channelId,channelId),
+      this.db.prepare("DELETE FROM messages WHERE channelId=? AND goalId IS NULL AND seq<=(SELECT generalPrunedThrough FROM channels WHERE id=?)").bind(channelId,channelId),
+    ]);
+  }
   user(actor: Actor) {
     if (actor.kind !== "user")
       throw new AppError(
@@ -116,6 +124,7 @@ export class RoomService {
     switch (action) {
       case "goal_start": return this.goals.start(actor,args);
       case "goal_cancel": return this.goals.cancel(actor,args);
+      case "goal_delete": return this.goals.remove(actor,args);
       case "goal_retry": return this.goals.retry(actor,args);
       case "goal_list": return this.goals.list(actor,args);
       case "goal_read": return this.goals.read(actor,args);
@@ -236,6 +245,9 @@ export class RoomService {
       case "channel_update": {
         const channelId = requiredString(args.channelId, "채널 ID", 100);
         const channel = await this.owner(actor, channelId);
+        const generalMessageLimit = args.generalMessageLimit === undefined ? channel.generalMessageLimit ?? 1000 : args.generalMessageLimit;
+        if (typeof generalMessageLimit !== "number" || !Number.isSafeInteger(generalMessageLimit) || generalMessageLimit < 0 || generalMessageLimit > 100000)
+          throw new AppError(400,"invalid_retention","일반 대화 보관 개수는 1~100000개 또는 자동 삭제 안 함(0)이어야 합니다.");
         const situation =
           typeof args.situation === "string"
             ? args.situation
@@ -292,7 +304,7 @@ export class RoomService {
             "비밀번호는 8~256자입니다.",
           );
         await this.run(
-          "UPDATE channels SET situation=?,situationVersion=situationVersion+1,heartbeatSeconds=?,heartbeatParticipants=?,heartbeatEnabled=?,paused=?,nextHeartbeatAt=?,goalSummaryParticipantId=? WHERE id=?",
+          "UPDATE channels SET situation=?,situationVersion=situationVersion+1,heartbeatSeconds=?,heartbeatParticipants=?,heartbeatEnabled=?,paused=?,nextHeartbeatAt=?,goalSummaryParticipantId=?,generalMessageLimit=? WHERE id=?",
           situation,
           seconds,
           heartbeatParticipants,
@@ -302,6 +314,7 @@ export class RoomService {
           paused,
           now() + seconds * 1000,
           goalSummaryParticipantId,
+          generalMessageLimit,
           channelId,
         );
         if (typeof args.password === "string" && args.password.length) {
@@ -330,11 +343,14 @@ export class RoomService {
               )
               .bind(channelId),
           ]);
+        await this.pruneGeneralMessages(channelId);
         await this.goals.tick(await this.member(actor,channelId));
         return this.member(actor, channelId);
       }
       case "snapshot": {
         const channelId = requiredString(args.channelId, "채널 ID", 100);
+        await this.member(actor, channelId);
+        await this.pruneGeneralMessages(channelId);
         const channel = await this.member(actor, channelId);
         await this.goals.tick(channel);
         const activeGoal=await this.goals.active(channelId);
@@ -444,6 +460,7 @@ export class RoomService {
             `question:${messageId}`,
             mentions.map(m=>m.id),
           );
+        await this.pruneGeneralMessages(channelId);
         return this.one<Message>(
           "SELECT * FROM messages WHERE id=?",
           messageId,
@@ -521,7 +538,7 @@ export class RoomService {
           requiredString(args.jobId, "작업 ID", 200),
         );
         await this.goals.tick(await this.member(actor,job.channelId));
-        return { status: (await this.one<Job>("SELECT * FROM jobs WHERE id=?",job.id))!.status };
+        return { status: (await this.one<Job>("SELECT * FROM jobs WHERE id=?",job.id))?.status ?? "cancelled" };
       }
       case "job_complete":
         return this.complete(actor, args);
@@ -571,6 +588,7 @@ export class RoomService {
             `external:${messageId}`,
             mentions.map(m=>m.id),
           );
+        await this.pruneGeneralMessages(channel.id);
         return { id: messageId };
       }
       default:
@@ -989,6 +1007,7 @@ export class RoomService {
       requiredString(args.jobId, "작업 ID", 250),
     );
     const jobRound=await this.one<Round>("SELECT * FROM rounds WHERE id=?",job.roundId);
+    if(!jobRound)throw new AppError(404,"job_not_found","삭제되었거나 없는 작업입니다.");
     if(jobRound?.goalId)return this.goals.complete(actor,job,args);
     await this.expireJobs(job.channelId);
     job=(await this.one<Job>("SELECT * FROM jobs WHERE id=?",job.id))!;
@@ -1063,6 +1082,7 @@ export class RoomService {
       );
     await this.db.batch(statements);
     await this.advance(job.roundId);
+    await this.pruneGeneralMessages(job.channelId);
     return { ok: true };
   }
 }

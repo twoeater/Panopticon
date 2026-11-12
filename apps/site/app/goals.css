@@ -12,6 +12,9 @@
 .goal-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:16px 0; }
 .goal-toolbar button { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--border); padding:6px 10px; border-radius:6px; font-size:12px; }
 .goal-toolbar button:hover:not(:disabled) { background:var(--hover); }
+.goal-delete { margin:16px 0; padding:12px; border:1px solid var(--border); border-radius:8px; font-size:13px; }
+.goal-delete .danger { color:#fca5a5; border:1px solid #7f4047; padding:7px 10px; border-radius:6px; }
+.goal-delete .danger:hover:not(:disabled) { background:#331f25; }
 .goal-form label { display:block; margin:14px 0; font-size:12px; }
 .goal-form input:not([type=checkbox]),.goal-form textarea,.goal-modal select { display:block; width:100%; margin-top:6px; padding:10px; border:1px solid var(--control-border); background:var(--panel); color:var(--text); border-radius:6px; }
 .goal-fields { display:grid; grid-template-columns:1fr 1fr; gap:16px; }

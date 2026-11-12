@@ -63,6 +63,8 @@ export class Goals {
     this.room.user(actor);
     const channel=await this.room.member(actor,requiredString(args.channelId,"채널",100));
     const goalId=await digest("goal:"+actor.id+":"+channel.id+":"+requiredString(args.requestId,"요청 ID",100));
+    if(await this.room.one("SELECT id FROM deletedGoals WHERE id=?",goalId))
+      throw new AppError(410,"goal_deleted","삭제된 목표입니다. 새 목표는 새 요청으로 시작해 주세요.");
     const previous=await this.room.one<Goal>("SELECT * FROM goals WHERE id=?",goalId);
     if(previous) return previous;
     await this.tick(channel);
@@ -77,8 +79,8 @@ export class Goals {
     const time=now();
     try {
       await this.room.db.batch([
-        this.statement("INSERT INTO goals (id,channelId,creatorId,title,instructions,deadline,finalDeadline,intervalSeconds,roster,nextRunAt,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)",goalId,channel.id,actor.id,title,instructions,deadline,deadline+600000,interval,JSON.stringify(members),time,time),
-        this.statement("INSERT INTO messages (id,channelId,ownerId,author,kind,text,phase,goalId,createdAt) VALUES (?,?,?,?,'human',?,'goal_notice',?,?)","goal-start:"+goalId,channel.id,actor.id,actor.name,instructions,goalId,time),
+        this.statement("INSERT INTO goals (id,channelId,creatorId,title,instructions,deadline,finalDeadline,intervalSeconds,roster,nextRunAt,createdAt) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM deletedGoals WHERE id=?)",goalId,channel.id,actor.id,title,instructions,deadline,deadline+600000,interval,JSON.stringify(members),time,time,goalId),
+        this.statement("INSERT INTO messages (id,channelId,ownerId,author,kind,text,phase,goalId,createdAt) SELECT ?,?,?,?,'human',?,'goal_notice',?,? WHERE EXISTS (SELECT 1 FROM goals WHERE id=?)","goal-start:"+goalId,channel.id,actor.id,actor.name,instructions,goalId,time,goalId),
         this.statement("UPDATE jobs SET status='cancelled',error='목표 토의 중에는 자동 수다를 중단합니다.' WHERE channelId=? AND status IN ('pending','running') AND roundId IN (SELECT id FROM rounds WHERE kind='heartbeat')",channel.id),
         this.statement("UPDATE rounds SET status='cancelled' WHERE channelId=? AND kind='heartbeat' AND status='active'",channel.id),
       ]);
@@ -161,6 +163,31 @@ export class Goals {
     if(!live(current) || current.phase!=="held") throw new AppError(409,"not_held","보류 중인 목표만 다시 시도할 수 있습니다.");
     await this.change(current,{phase:"waiting",roundId:null,proposalId:null,lastError:null,nextRunAt:now()});
     await this.tick(channel); return this.get(goal.id);
+  }
+  async remove(actor: Actor,args: Record<string,unknown>) {
+    this.room.user(actor);
+    const channel=await this.room.member(actor,requiredString(args.channelId,"채널",100));
+    const goalId=requiredString(args.goalId,"목표",100);
+    const g=await this.room.one<Goal>("SELECT * FROM goals WHERE id=? AND channelId=?",goalId,channel.id);
+    const deleted=await this.room.one<{creatorId:string}>("SELECT creatorId FROM deletedGoals WHERE id=? AND channelId=?",goalId,channel.id);
+    if(!g&&!deleted)throw new AppError(404,"goal_not_found","목표를 찾을 수 없습니다.");
+    if(actor.id!==(g??deleted)!.creatorId&&actor.id!==channel.ownerId)
+      throw new AppError(403,"goal_owner_required","목표 생성자와 방장만 삭제할 수 있습니다.");
+    if(!g)return {ok:true,duplicate:true};
+    if(live(g))throw new AppError(409,"goal_live","진행 중인 목표는 먼저 취소한 뒤 삭제해 주세요.");
+    // Atomic content removal, plus a content-free tombstone for request deduplication.
+    await this.room.db.batch([
+      this.statement("INSERT OR IGNORE INTO deletedGoals (id,channelId,creatorId,deletedAt) SELECT id,channelId,creatorId,? FROM goals WHERE id=? AND status IN ('completed','cancelled')",now(),goalId),
+      this.statement("DELETE FROM jobs WHERE roundId IN (SELECT id FROM rounds WHERE goalId=?)",goalId),
+      this.statement("DELETE FROM rounds WHERE goalId=?",goalId),
+      this.statement("DELETE FROM messages WHERE goalId=?",goalId),
+      this.statement("DELETE FROM goalVotes WHERE goalId=?",goalId),
+      this.statement("DELETE FROM goalProposals WHERE goalId=?",goalId),
+      this.statement("DELETE FROM goalCheckpoints WHERE goalId=?",goalId),
+      this.statement("UPDATE channels SET historyRevision=historyRevision+1 WHERE id=? AND EXISTS (SELECT 1 FROM goals WHERE id=?)",channel.id,goalId),
+      this.statement("DELETE FROM goals WHERE id=?",goalId),
+    ]);
+    return {ok:true};
   }
   async latestSeq(g: Goal) {
     const row=await this.room.one<{seq:number}>("SELECT COALESCE(MAX(seq),0) seq FROM messages WHERE goalId=? AND seq<=?",g.id,g.cutoffSeq??Number.MAX_SAFE_INTEGER);
@@ -264,10 +291,12 @@ export class Goals {
   }
   async complete(actor: Actor,job: Job,args: Record<string,unknown>) {
     const round=(await this.room.one<Round>("SELECT * FROM rounds WHERE id=?",job.roundId))!;
+    if(!round)throw new AppError(404,"goal_not_found","삭제되었거나 없는 목표 작업입니다.");
     const channel=await this.room.member(actor,job.channelId);
     await this.tick(channel);
     const g=await this.get(round.goalId!);
     const stored=(await this.room.one<Job>("SELECT * FROM jobs WHERE id=?",job.id))!;
+    if(!stored)throw new AppError(404,"goal_not_found","삭제되었거나 없는 목표 작업입니다.");
     if(["completed","skipped","failed"].includes(stored.status))return {ok:true,duplicate:true};
     if(stored.status!=="running" || !live(g) || g.roundId!==round.id || g.revision!==round.goalRevision || channel.paused)
       throw new AppError(409,"goal_changed","이 목표 작업은 더 이상 유효하지 않습니다.");

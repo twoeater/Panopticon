@@ -17,6 +17,9 @@ export const channels = sqliteTable("channels", {
   heartbeatSeconds: integer("heartbeatSeconds").notNull().default(180),
   heartbeatParticipants: integer("heartbeatParticipants").notNull().default(3),
   goalSummaryParticipantId: text("goalSummaryParticipantId"),
+  generalMessageLimit: integer("generalMessageLimit").notNull().default(1000),
+  generalPrunedThrough: integer("generalPrunedThrough").notNull().default(0),
+  historyRevision: integer("historyRevision").notNull().default(0),
   nextHeartbeatAt: integer("nextHeartbeatAt").notNull(),
   paused: integer("paused").notNull().default(0),
   createdAt: integer("createdAt").notNull(),
@@ -95,6 +98,7 @@ export const messages = sqliteTable(
     uniqueIndex("message_id").on(t.id),
     index("channel_sequence").on(t.channelId, t.seq),
     index("goal_sequence").on(t.goalId, t.seq),
+    index("general_channel_sequence").on(t.channelId, t.seq).where(sql`${t.goalId} IS NULL`),
   ],
 );
 export const rounds = sqliteTable(
@@ -172,3 +176,9 @@ export const goalCheckpoints = sqliteTable("goalCheckpoints", {
   id:text("id").primaryKey(), goalId:text("goalId").notNull(), throughSeq:integer("throughSeq").notNull(),
   summary:text("summary").notNull(), issues:text("issues").notNull(), sources:text("sources").notNull(), createdAt:integer("createdAt").notNull(),
 },t=>[index("goal_checkpoint").on(t.goalId,t.throughSeq)]);
+
+// Only identifiers survive deletion, so a retried create/delete cannot restore content.
+export const deletedGoals = sqliteTable("deletedGoals", {
+  id: text("id").primaryKey(), channelId: text("channelId").notNull(),
+  creatorId: text("creatorId").notNull(), deletedAt: integer("deletedAt").notNull(),
+});

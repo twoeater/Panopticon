@@ -48,6 +48,9 @@ export interface Channel {
   heartbeatSeconds: number;
   heartbeatParticipants: number; // 0 means every eligible online participant.
   goalSummaryParticipantId?: string | null;
+  generalMessageLimit?: number; // 0 disables automatic deletion.
+  generalPrunedThrough?: number;
+  historyRevision?: number;
   nextHeartbeatAt: number;
   paused: number;
   createdAt: number;

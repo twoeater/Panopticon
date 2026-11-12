@@ -49,6 +49,47 @@ async function untilVote(f:Awaited<ReturnType<typeof setup>>) {
   }
   throw new Error("vote not reached");
 }
+
+test("deleting a completed goal removes all its stored content, keeps other history, and cannot be recreated by retries",async()=>{
+  const f=await setup(1);try{
+    const requestId="delete-completed",g=await f.start({requestId});
+    const vote=await untilVote(f);await f.room.complete(f.device,{jobId:vote.job.id,goalResult:result(vote)});
+    assert.equal((await f.room.goals.get(g.id)).status,"completed");
+    const next=await f.start();
+    await f.room.call(member,"message_post",{channelId:f.channel.id,clientMessageId:"keep",text:"keep ordinary chat"});
+    const remove=(actor=member,channelId=f.channel.id)=>f.room.call(actor,"goal_delete",{channelId,goalId:g.id});
+    await assert.rejects(remove(f.device),/직접 변경/);
+    const stranger:Actor={id:"stranger",name:"Stranger",kind:"user"};
+    await f.room.call(stranger,"channel_join",{channelId:f.channel.id,password:"test-password"});
+    await assert.rejects(remove(stranger),/생성자와 방장/);
+    await assert.rejects(remove(member,"another-channel"),/접근/);
+    const roundIds=f.sqlite.prepare("SELECT id FROM rounds WHERE goalId=?").all(g.id).map(r=>r.id);
+    await Promise.all([remove(),remove(owner)]);
+    for(const table of ["messages","goalVotes","goalProposals","goalCheckpoints","rounds"])
+      assert.equal(f.sqlite.prepare(`SELECT count(*) n FROM ${table} WHERE goalId=?`).get(g.id)!.n,0,table);
+    for(const roundId of roundIds)assert.equal(f.sqlite.prepare("SELECT count(*) n FROM jobs WHERE roundId=?").get(roundId)!.n,0);
+    assert.equal(f.sqlite.prepare("SELECT count(*) n FROM goals WHERE id=?").get(g.id)!.n,0);
+    assert.ok(f.sqlite.prepare("SELECT count(*) n FROM messages WHERE goalId=?").get(next.id)!.n);
+    assert.ok(f.sqlite.prepare("SELECT id FROM messages WHERE text='keep ordinary chat'").get());
+    assert.equal((await f.room.member(owner,f.channel.id)).historyRevision,1);
+    assert.deepEqual(await remove(),{ok:true,duplicate:true});
+    await assert.rejects(f.start({requestId}),/삭제된 목표/);
+    await assert.rejects(f.room.complete(f.device,{jobId:vote.job.id,goalResult:result(vote)}));
+    await assert.rejects(f.room.call(member,"goal_history",{channelId:f.channel.id,goalId:g.id}),/찾을 수/);
+  }finally{f.sqlite.close();}
+});
+test("live goals require cancellation before deletion and late responses cannot restore deleted messages",async()=>{
+  const f=await setup();try{
+    const g=await f.start(),turn=(await f.poll()).jobs[0];
+    const args={channelId:f.channel.id,goalId:g.id};
+    await assert.rejects(f.room.call(member,"goal_delete",args),/먼저 취소/);
+    await f.room.call(member,"goal_cancel",args);await f.room.call(owner,"goal_delete",args);
+    await assert.rejects(f.room.complete(f.device,{jobId:turn.job.id,goalResult:result(turn)}));
+    await assert.rejects(f.room.goals.complete(f.device,turn.job,{goalResult:result(turn)}),/삭제/);
+    await assert.rejects(f.room.call(member,"message_post",{...args,clientMessageId:"late",text:"late supplement"}),/찾을 수/);
+    assert.equal(f.sqlite.prepare("SELECT count(*) n FROM messages WHERE goalId=?").get(g.id)!.n,0);
+  }finally{f.sqlite.close();}
+});
 test("human members can start channel goals; one live goal and capability-gated participation",async()=>{
   const f=await setup();
   try {

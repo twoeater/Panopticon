@@ -20,13 +20,13 @@ export function GoalCenter({channelId,ownerId,userId,participants,active,serverT
   const [tab,setTab]=useState("result"),[messages,setMessages]=useState<Message[]>([]),[before,setBefore]=useState<number|undefined>(),[nextBefore,setNextBefore]=useState<number|null>(null);
   const [proposalId,setProposalId]=useState(""),[proposalOffset,setProposalOffset]=useState(0);
   const [creating,setCreating]=useState(false),[title,setTitle]=useState(""),[instructions,setInstructions]=useState(""),[deadline,setDeadline]=useState(localDeadline),[interval,setIntervalSeconds]=useState(60);
-  const [busy,setBusy]=useState(false),[error,setError]=useState("");
+  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[confirmDelete,setConfirmDelete]=useState(false);
   const request=useRef<{key:string;id:string}|null>(null),version=useRef(0);
   const ownerLabel=(p:{ownerId:string;ownerName?:string})=>p.ownerId===userId?"내 AI":p.ownerName||"참여자 "+p.ownerId.slice(0,8);
   const available=participants.filter(p=>p.goalsSupported===1&&p.onlineAt>serverTime-30000&&p.deviceId!=="mcp");
   const participation=(p:Participant)=>p.deviceId==="mcp"?"보충 발언 가능":p.goalsSupported!==1?"실행기 업데이트·재시작 필요":p.onlineAt<=serverTime-30000?"온라인 연결 대기":"자동 참여";
   useEffect(()=>{setView(null);setDetail(null);setCreating(false);},[channelId]); // A goal never carries into another channel.
-  useEffect(()=>{setDetail(null);setBefore(undefined);setProposalId("");setProposalOffset(0);setTab("result");setError("");},[view]);
+  useEffect(()=>{setDetail(null);setBefore(undefined);setProposalId("");setProposalOffset(0);setTab("result");setError("");setConfirmDelete(false);},[view]);
   useEffect(()=>{
     if(!view)return;
     let disposed=false;const ticket=++version.current;
@@ -43,7 +43,7 @@ export function GoalCenter({channelId,ownerId,userId,participants,active,serverT
             if(disposed||ticket!==version.current)return;setMessages(history.messages);setNextBefore(history.nextBefore);
           }
         }
-      }catch(e){if(!disposed)setError(e instanceof Error?e.message:"목표 조회 실패");}
+      }catch(e){if(!disposed&&ticket===version.current){setDetail(null);setMessages([]);setError(e instanceof Error?e.message:"목표 조회 실패");}}
     };
     void refresh();const timer=setInterval(refresh,5000);return()=>{disposed=true;clearInterval(timer);};
   },[view,channelId,offset,proposalId,proposalOffset,tab,before,api]);
@@ -89,6 +89,17 @@ export function GoalCenter({channelId,ownerId,userId,participants,active,serverT
           {g.phase==="held"&&<button disabled={busy} onClick={()=>void act(async()=>{await api("goal_retry",{channelId,goalId:g.id});await onChange();setDetail(await api("goal_read",{channelId,goalId:g.id}));})}>보류 작업 다시 시도</button>}
           <button disabled={busy} onClick={()=>void act(async()=>{await api("goal_cancel",{channelId,goalId:g.id});await onChange();setDetail(await api("goal_read",{channelId,goalId:g.id}));})}>목표 취소</button>
         </div>}
+        {canManage&&!live&&<div className="goal-delete">
+          {confirmDelete?<div role="alert">
+            <p><strong>‘{g.title}’ 목표 기록을 영구 삭제할까요?</strong></p>
+            <p className="goal-help">목표 지시, 토의 메시지, 모든 초안·투표·개인 결론·누적 요약과 실행 기록을 함께 삭제합니다. 일반 채팅창에서도 사라지며 복구할 수 없습니다.</p>
+            <div className="goal-toolbar"><button disabled={busy} onClick={()=>setConfirmDelete(false)}>돌아가기</button><button className="danger" disabled={busy} onClick={()=>void act(async()=>{
+              version.current++;await api("goal_delete",{channelId,goalId:g.id});
+              setDetail(null);setMessages([]);setGoals(old=>old.filter(item=>item.id!==g.id));setOffset(0);setView("list");setConfirmDelete(false);await onChange();
+            })}>목표와 메시지 영구 삭제</button></div>
+          </div>:<button className="danger" disabled={busy} onClick={()=>setConfirmDelete(true)}>목표 기록 삭제</button>}
+        </div>}
+        {canManage&&live&&<p className="goal-help">기록을 삭제하려면 먼저 목표를 취소해 주세요.</p>}
         <div className="goal-tabs" role="tablist" aria-label="목표 정보">{[["result","공동 결과"],["opinions","개인 결론"],["history","토의 기록"]].map(([key,label])=><button key={key} role="tab" aria-selected={tab===key} onClick={()=>setTab(key)}>{label}</button>)}</div>
         {tab==="result"&&<>
           <label className="goal-proposal-select">초안 이력<select value={proposalId} onChange={e=>setProposalId(e.target.value)}><option value="">현재 결과</option>{detail.proposals.map(p=><option key={p.id} value={p.id}>{p.version}회차 초안 · {date(p.createdAt)}</option>)}</select></label>

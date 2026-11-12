@@ -19,7 +19,7 @@ import {
 import type { Channel, Participant, Message, Job, Round } from "../lib/domain";
 import { MessageMarkdown } from "./message-markdown";
 import { GoalCenter, goalPhaseLabels } from "./goal-center";
-import { mergeMessageWindow } from "../lib/message-window";
+import { reconcileMessageWindow } from "../lib/message-window";
 import type { GoalSummary } from "../lib/domain";
 import { mentionQuery, readMentions, resolveMentions, updateMentionSelections, type MentionSelection } from "../lib/mentions";
 type Snapshot = {
@@ -105,6 +105,7 @@ export default function ChatRoom({
     [heartbeatParticipants, setHeartbeatParticipants] = useState(3),
     [heartbeatAll, setHeartbeatAll] = useState(false),
     [goalSummaryParticipantId, setGoalSummaryParticipantId] = useState(""),
+    [generalMessageLimit, setGeneralMessageLimit] = useState(1000),
     [copied, setCopied] = useState("");
   const composer = useRef<HTMLTextAreaElement>(null),
     readingHistoryRef=useRef(false),
@@ -135,7 +136,11 @@ export default function ChatRoom({
         list.current.scrollTop -
         list.current.clientHeight <
         160;
-    setData(old => old && old.channel.id === r.channel.id ? {...r, messages: readingHistoryRef.current ? old.messages : mergeMessageWindow(old.messages,r.messages)} : r);
+    setData(old => {
+      if (!old || old.channel.id !== r.channel.id) return r;
+      if ((r.channel.historyRevision ?? 0) < (old.channel.historyRevision ?? 0) || (r.channel.generalPrunedThrough ?? 0) < (old.channel.generalPrunedThrough ?? 0)) return old;
+      return {...r, messages: reconcileMessageWindow(old.messages,r.messages,old.channel,r.channel,readingHistoryRef.current)};
+    });
     setConnected(true);
     if (bottom && !readingHistoryRef.current)
       setTimeout(
@@ -143,6 +148,9 @@ export default function ChatRoom({
         20,
       );
   }, [selected]);
+  useEffect(() => {
+    readingHistoryRef.current=false;setReadingHistory(false);setOldestReached(false);setReply(null);
+  }, [data?.channel.historyRevision]);
   useEffect(() => {
     bootstrap().catch((e) => setError(e.message));
   }, [bootstrap]);
@@ -180,7 +188,11 @@ export default function ChatRoom({
     setOldestReached(r.messages.length < 100);
     if(!r.messages.length)return;
     readingHistoryRef.current=true;setReadingHistory(true);
-    setData(old => old ? {...old, messages:r.messages} : old);
+    setData(old => {
+      if (!old || old.channel.id !== r.channel.id) return old;
+      if ((r.channel.historyRevision ?? 0) < (old.channel.historyRevision ?? 0) || (r.channel.generalPrunedThrough ?? 0) < (old.channel.generalPrunedThrough ?? 0)) return old;
+      return {...old,channel:r.channel,messages:reconcileMessageWindow([],r.messages,old.channel,r.channel)};
+    });
     requestAnimationFrame(() => { if(list.current) list.current.scrollTop=0; });
   });
   const copy = async (value: string, label: string) => {
@@ -206,6 +218,7 @@ export default function ChatRoom({
       setHeartbeatParticipants(data.channel.heartbeatParticipants || 3);
       setHeartbeatAll(data.channel.heartbeatParticipants === 0);
       setGoalSummaryParticipantId(data.channel.goalSummaryParticipantId || "");
+      setGeneralMessageLimit(data.channel.generalMessageLimit ?? 1000);
     }
   };
   const send = () =>
@@ -921,6 +934,7 @@ export default function ChatRoom({
                       heartbeatEnabled: heartbeat,
                       heartbeatParticipants: heartbeatAll ? 0 : heartbeatParticipants,
                       goalSummaryParticipantId: goalSummaryParticipantId || null,
+                      generalMessageLimit,
                       ...(password ? { password } : {}),
                     });
                     await refresh();
@@ -985,6 +999,11 @@ export default function ChatRoom({
                 <p className="settings-help">
                   1명이 화제를 시작하고 나머지가 답합니다. 다음 자동 대화부터 적용되며, 각 실행기의 동시 실행 수와 호출 한도를 따릅니다.
                 </p>
+                <label>
+                  일반 대화 보관 개수
+                  <input type="number" min={0} max={100000} step={1} required value={generalMessageLimit} onChange={e=>setGeneralMessageLimit(Number(e.target.value))}/>
+                </label>
+                <p className="settings-help">기본 1,000개 · 0은 자동 삭제 안 함. 저장하면 개수를 초과한 오래된 일반 대화가 서버에서 영구 삭제됩니다. 목표 기록은 별도로 보존합니다.</p>
                 <label>
                   목표 요약 담당
                   <select className="summary-select" value={goalSummaryParticipantId} onChange={(e)=>setGoalSummaryParticipantId(e.target.value)}>
